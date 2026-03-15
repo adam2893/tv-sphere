@@ -476,10 +476,17 @@ async def proxy_stream():
 
     for key in ["Host", "Content-Length", "Transfer-Encoding", "Connection"]:
         headers.pop(key, None)
+    
+    logging.info(f"Fetching with headers: {headers}")
 
     async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
         try:
             resp = await session.get(target_url, headers=headers)
+            
+            logging.info(f"Upstream response: {resp.status_code} - {resp.headers.get('Content-Type', 'unknown')}")
+            
+            if resp.status_code != 200:
+                logging.warning(f"Upstream error: {resp.content[:500]}")
             
             if "mpegurl" in resp.headers.get("Content-Type", "") or target_url.endswith(".m3u8"):
                 text = resp.content.decode("utf-8")
@@ -502,6 +509,7 @@ async def proxy_stream():
             return Response(resp.content, status=resp.status_code, mimetype=resp.headers.get("Content-Type", ""))
             
         except Exception as e:
+            logging.error(f"Proxy error: {e}")
             return str(e), 500
 
 
