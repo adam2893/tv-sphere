@@ -447,17 +447,27 @@ async def proxy_stream():
     headers_b64 = request.args.get("headers")
     sig = request.args.get("sig")
 
+    logging.info(f"Proxy called - url={bool(target_url)}, headers={bool(headers_b64)}, sig={bool(sig)}")
+    
     if not target_url:
         return "Missing URL", 400
+    
+    if not sig:
+        logging.warning("Proxy request missing signature")
+        return "Missing signature", 403
     
     # Debug logging
     expected_sig = sign_url(target_url)
     logging.info(f"Proxy request - URL: {target_url[:80]}...")
+    logging.info(f"Proxy request - Sig type: {type(sig)}, Expected type: {type(expected_sig)}")
+    logging.info(f"Proxy request - Sig len: {len(sig)}, Expected len: {len(expected_sig)}")
     logging.info(f"Proxy request - Got sig: {sig[:20]}... Expected sig: {expected_sig[:20]}...")
     
-    if not sig or not hmac.compare_digest(sig, expected_sig):
+    if not hmac.compare_digest(sig, expected_sig):
         logging.warning(f"Signature mismatch for proxy request")
-        return "Forbidden", 403
+        return "Forbidden - signature mismatch", 403
+    
+    logging.info("Signature verified, fetching stream...")
 
     try:
         headers = json.loads(base64.b64decode(headers_b64).decode()) if headers_b64 else {}
