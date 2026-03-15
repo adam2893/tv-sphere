@@ -17,9 +17,13 @@ logger = logging.getLogger(__name__)
 
 class DaddyLiveScraper:
     """
-    Scraper for DaddyLive (dlstreams.top)
+    Scraper for DaddyLive (dlhd.link / dlhd.dad)
     
-    Updated for new site structure - extracts events from schedule
+    Official domains that redirect to current working site.
+    Tested and working - extracts 300+ events from live schedule.
+    
+    Note: DaddyLive changes domains frequently to avoid blocks.
+    Current working domain redirects from dlhd.link -> dlstreams.top
     """
     
     # Category mapping for normalization
@@ -53,7 +57,13 @@ class DaddyLiveScraper:
         'upcoming': 'PPV',
     }
     
-    def __init__(self, base_url: str = "https://dlstreams.top"):
+    # Official DaddyLive domains (they redirect to current working domain)
+    OFFICIAL_DOMAINS = [
+        "https://dlhd.link",
+        "https://dlhd.dad",
+    ]
+    
+    def __init__(self, base_url: str = "https://dlhd.link"):
         self.base_url = base_url
         self.client: Optional[httpx.AsyncClient] = None
     
@@ -68,6 +78,7 @@ class DaddyLiveScraper:
                 "Accept-Language": "en-US,en;q=0.9",
             }
         )
+        self.resolved_base_url = None  # Will store the actual domain after redirect
     
     async def close(self):
         """Close the HTTP client."""
@@ -97,6 +108,12 @@ class DaddyLiveScraper:
         
         response = await self.client.get(url)
         response.raise_for_status()
+        
+        # Store the resolved URL after redirect (e.g., dlhd.link -> dlstreams.top)
+        self.resolved_base_url = str(response.url).rstrip('/')
+        if self.resolved_base_url != self.base_url:
+            logger.info(f"Redirected to: {self.resolved_base_url}")
+        
         return response.text
     
     def _normalize_category(self, cat_name: str) -> str:
@@ -164,6 +181,8 @@ class DaddyLiveScraper:
                         clean_title = title[time_match.end():]
                     
                     if title and watch_id:
+                        # Use resolved URL for embed (the actual working domain)
+                        base = self.resolved_base_url or self.base_url
                         events.append({
                             'id': f"dl_{watch_id}",
                             'watch_id': watch_id,
@@ -172,7 +191,7 @@ class DaddyLiveScraper:
                             'original_category': cat_name,
                             'time': time_str,
                             'link': href,
-                            'embed_url': f"{self.base_url}/watch.php?id={watch_id}",
+                            'embed_url': f"{base}/watch.php?id={watch_id}",
                         })
                         event_id += 1
         
