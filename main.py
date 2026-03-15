@@ -352,40 +352,56 @@ async def get_stream_for_channel(channel_id: str) -> List[Dict]:
         
         for embed in embeds[:3]:
             try:
+                logging.info(f"Resolving Streamed.pk stream: {embed['embed_url']}")
                 result = await resolve_m3u8(embed['embed_url'])
                 if result and 'url' in result:
+                    # Route through our proxy with headers
+                    m3u8_url = result['url']
+                    headers_b64 = base64.b64encode(json.dumps(result['headers']).encode()).decode()
+                    proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(m3u8_url)}&headers={headers_b64}&sig={sign_url(m3u8_url)}"
+                    
                     streams.append({
                         "title": f"{embed['source'].title()} - Stream {embed['stream_no']} ({embed['quality']})",
-                        "url": result['url'],
-                        "behaviorHints": {"notWebReady": True, "proxyHeaders": {"request": result['headers']}},
+                        "url": proxy_url,
                     })
+                    logging.info(f"Got stream URL: {m3u8_url[:80]}...")
                     break
-            except:
+            except Exception as e:
+                logging.error(f"Error resolving stream: {e}")
                 continue
     
-    # DaddyLive channels - resolve via Streamed.pk embed
+    # DaddyLive channels - resolve embed to M3U8
     elif channel_id.startswith("dl_"):
-        # DaddyLive channels need to be resolved through their embed page
-        # For now, return a placeholder - would need Playwright to resolve
         channels = await get_all_channels()
         channel = next((c for c in channels if c['id'] == channel_id), None)
         if channel:
-            # Try to get embed URL from channel data
             embed_url = channel.get('embed_url')
             if embed_url:
+                logging.info(f"Resolving DaddyLive stream: {embed_url}")
                 result = await resolve_m3u8(embed_url)
                 if result and 'url' in result:
+                    # Route through our proxy with headers
+                    m3u8_url = result['url']
+                    headers_b64 = base64.b64encode(json.dumps(result['headers']).encode()).decode()
+                    proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(m3u8_url)}&headers={headers_b64}&sig={sign_url(m3u8_url)}"
+                    
                     streams.append({
                         "title": f"{channel['name']} - Live",
-                        "url": result['url'],
-                        "behaviorHints": {"notWebReady": True, "proxyHeaders": {"request": result['headers']}},
+                        "url": proxy_url,
+                    })
+                    logging.info(f"Got stream URL for {channel['name']}: {m3u8_url[:80]}...")
+                else:
+                    logging.warning(f"Could not resolve stream for {channel['name']}")
+                    streams.append({
+                        "title": f"{channel['name']} - Stream unavailable",
+                        "url": "#",
+                        "description": "Could not resolve stream - try again later",
                     })
             else:
-                # Return info that stream needs resolution
                 streams.append({
-                    "title": f"{channel['name']} - DaddyLive",
+                    "title": f"{channel['name']} - No embed URL",
                     "url": "#",
-                    "description": "Stream requires resolution - check DaddyLive directly",
+                    "description": "Stream not available",
                 })
     
     # Thai channels
