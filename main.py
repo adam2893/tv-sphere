@@ -489,7 +489,7 @@ async def manifest():
     
     return jsonify({
         "id": "org.stremio.tvsphere",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "name": "TV Sphere",
         "description": "Live TV from Sports, Thai & Australian channels",
         "logo": url_for("serve_logo", _external=True),
