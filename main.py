@@ -383,13 +383,16 @@ async def get_stream_for_channel(channel_id: str) -> List[Dict]:
                     # Route through our proxy with headers
                     m3u8_url = result['url']
                     headers_b64 = base64.b64encode(json.dumps(result['headers']).encode()).decode()
-                    proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(m3u8_url)}&headers={headers_b64}&sig={sign_url(m3u8_url)}"
+                    sig = sign_url(m3u8_url)
+                    proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(m3u8_url)}&headers={headers_b64}&sig={sig}"
+                    
+                    logging.info(f"Generated proxy URL - M3U8: {m3u8_url[:80]}...")
+                    logging.info(f"Generated proxy URL - Sig: {sig[:20]}...")
                     
                     streams.append({
                         "title": f"{channel['name']} - Live",
                         "url": proxy_url,
                     })
-                    logging.info(f"Got stream URL for {channel['name']}: {m3u8_url[:80]}...")
                 else:
                     logging.warning(f"Could not resolve stream for {channel['name']}")
                     streams.append({
