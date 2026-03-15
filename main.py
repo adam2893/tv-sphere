@@ -363,6 +363,31 @@ async def get_stream_for_channel(channel_id: str) -> List[Dict]:
             except:
                 continue
     
+    # DaddyLive channels - resolve via Streamed.pk embed
+    elif channel_id.startswith("dl_"):
+        # DaddyLive channels need to be resolved through their embed page
+        # For now, return a placeholder - would need Playwright to resolve
+        channels = await get_all_channels()
+        channel = next((c for c in channels if c['id'] == channel_id), None)
+        if channel:
+            # Try to get embed URL from channel data
+            embed_url = channel.get('embed_url')
+            if embed_url:
+                result = await resolve_m3u8(embed_url)
+                if result and 'url' in result:
+                    streams.append({
+                        "title": f"{channel['name']} - Live",
+                        "url": result['url'],
+                        "behaviorHints": {"notWebReady": True, "proxyHeaders": {"request": result['headers']}},
+                    })
+            else:
+                # Return info that stream needs resolution
+                streams.append({
+                    "title": f"{channel['name']} - DaddyLive",
+                    "url": "#",
+                    "description": "Stream requires resolution - check DaddyLive directly",
+                })
+    
     # Thai channels
     elif channel_id.startswith("thai_"):
         # Return the stream page URL (needs resolution at play time)
@@ -468,7 +493,7 @@ async def manifest():
         "name": "TV Sphere",
         "description": "Live TV from Sports, Thai & Australian channels",
         "logo": url_for("serve_logo", _external=True),
-        "resources": ["catalog", "stream"],
+        "resources": ["catalog", "stream", "meta"],
         "types": ["tv"],
         "idPrefixes": ["tv_", "dl_", "st_", "thai_", "aus_"],
         "catalogs": [{
@@ -510,6 +535,50 @@ async def catalog(type: str, id: str, genre: str = None):
         })
 
     return jsonify({"metas": metas})
+
+
+@app.route("/meta/<type>/<id>.json")
+async def meta(type: str, id: str):
+    """Return metadata for a specific channel/event."""
+    channels = await get_all_channels()
+    channel = next((c for c in channels if c["id"] == id), None)
+    
+    if not channel:
+        return jsonify({"meta": {}})
+    
+    cat = channel.get("category", "Other")
+    cat_info = CATEGORIES.get(cat, {"name": cat, "icon": "📺"})
+    
+    # Determine source info
+    source_name = channel.get("source", "unknown")
+    source_labels = {
+        "streamed": "Streamed.pk",
+        "daddylive": "DaddyLive",
+        "adintrend": "Thai TV",
+        "freeview": "Freeview AU",
+        "abc-iview": "ABC iView",
+        "sbs": "SBS On Demand",
+        "10play": "10Play",
+    }
+    
+    meta_data = {
+        "id": channel["id"],
+        "type": "tv",
+        "name": channel["name"],
+        "description": f"{cat_info['icon']} {cat_info['name']}",
+        "genres": [cat_info["name"]],
+        "logo": channel.get("logo", ""),
+        "background": channel.get("logo", ""),
+        "runtime": "Live",
+        "releaseInfo": "Live Stream",
+        "links": [],
+    }
+    
+    # Add source-specific info
+    if source_name in source_labels:
+        meta_data["description"] += f"\n\nSource: {source_labels[source_name]}"
+    
+    return jsonify({"meta": meta_data})
 
 
 @app.route("/stream/<type>/<id>.json")
