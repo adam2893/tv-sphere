@@ -1,6 +1,6 @@
 """
 DaddyLive Scraper Module
-Working scraper tested against live site - extracts 450+ events
+Updated for dlstreams.top - extracts live sports events
 """
 import asyncio
 import re
@@ -17,44 +17,45 @@ logger = logging.getLogger(__name__)
 
 class DaddyLiveScraper:
     """
-    Scraper for DaddyLive (daddylivehd.net)
+    Scraper for DaddyLive (dlstreams.top)
     
-    Tested and working - extracts 450+ events from live schedule
+    Updated for new site structure - extracts events from schedule
     """
     
-    # Known category keywords
-    CATEGORY_KEYWORDS = {
-        'ppv events': 'PPV',
-        'tv shows': 'TV Shows',
+    # Category mapping for normalization
+    CATEGORY_MAP = {
+        'ppv': 'PPV',
         'soccer': 'Soccer',
         'football': 'Football',
         'basketball': 'Basketball',
+        'nba': 'Basketball',
         'tennis': 'Tennis',
         'cricket': 'Cricket',
         'rugby': 'Rugby',
         'motor': 'Motor Sports',
-        'motor sports': 'Motor Sports',
+        'motorsport': 'Motor Sports',
         'hockey': 'Hockey',
+        'ice hockey': 'Hockey',
+        'nhl': 'Hockey',
         'baseball': 'Baseball',
         'golf': 'Golf',
         'boxing': 'Boxing',
         'mma': 'MMA',
-        'wrestling': 'Wrestling',
-        'horse racing': 'Horse Racing',
+        'ufc': 'MMA',
+        'wrestling': 'MMA',
         'horse': 'Horse Racing',
+        'darts': 'Darts',
+        'snooker': 'Snooker',
+        'cycling': 'Cycling',
+        'ski': 'Winter Sports',
+        'winter': 'Winter Sports',
+        'biathlon': 'Winter Sports',
+        'upcoming': 'PPV',
     }
     
-    def __init__(self, base_url: str = "https://daddylivehd.net"):
+    def __init__(self, base_url: str = "https://dlstreams.top"):
         self.base_url = base_url
         self.client: Optional[httpx.AsyncClient] = None
-        
-        # Time pattern: HH:MM format (tested working)
-        self.time_pattern = re.compile(r'^(\d{1,2}):(\d{2})$')
-        
-        # Date pattern
-        self.date_pattern = re.compile(
-            r'(\w+day)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(\w+)\s+(\d{4})'
-        )
     
     async def initialize(self):
         """Initialize the HTTP client."""
@@ -77,7 +78,7 @@ class DaddyLiveScraper:
     async def get_events(self) -> List[Dict]:
         """
         Main method to get all scheduled events.
-        Returns list of events with time, title, category, date
+        Returns list of events with title, category, link
         """
         if not self.client:
             await self.initialize()
@@ -90,78 +91,90 @@ class DaddyLiveScraper:
             return []
     
     async def _fetch_schedule_page(self) -> str:
-        """Fetch the schedule page HTML."""
-        url = f"{self.base_url}/en/daddy-live-schedule"
+        """Fetch the schedule page HTML (homepage is now the schedule)."""
+        url = self.base_url
         logger.info(f"Fetching schedule from: {url}")
         
         response = await self.client.get(url)
         response.raise_for_status()
         return response.text
     
+    def _normalize_category(self, cat_name: str) -> str:
+        """Normalize category name to standard format."""
+        cat_lower = cat_name.lower()
+        
+        for key, value in self.CATEGORY_MAP.items():
+            if key in cat_lower:
+                return value
+        
+        return "Other"
+    
     def _parse_schedule_html(self, html: str) -> List[Dict]:
         """
         Parse the schedule HTML to extract events.
         
-        Tested pattern: Time in <b>HH:MM</b> followed by title in next <b>
+        New structure:
+        - div.schedule contains all events
+        - div.schedule__category contains each category
+        - div.schedule__catHeader has category name
+        - div.schedule__channels has links to streams
         """
         soup = BeautifulSoup(html, 'html.parser')
         
-        # Find the main content div
-        content = soup.find('div', class_='content')
-        if not content:
-            logger.warning("Could not find content div")
+        # Find the schedule container
+        schedule = soup.find('div', class_='schedule')
+        if not schedule:
+            logger.warning("Could not find schedule div")
             return []
         
-        # Get all bold elements
-        bolds = content.find_all('b')
-        logger.info(f"Found {len(bolds)} <b> elements")
-        
         events = []
-        current_category = "Other"
-        current_date = None
+        event_id = 0
         
-        for i, b in enumerate(bolds):
-            text = b.get_text(strip=True)
+        # Find all categories
+        categories = schedule.find_all('div', class_='schedule__category')
+        logger.info(f"Found {len(categories)} categories")
+        
+        for cat in categories:
+            # Get category name from header
+            header = cat.find('div', class_='schedule__catHeader')
+            cat_name = header.get_text(strip=True) if header else 'Other'
+            normalized_cat = self._normalize_category(cat_name)
             
-            # Check for date header
-            if self.date_pattern.search(text):
-                current_date = text
-                continue
-            
-            # Check for time (HH:MM)
-            if self.time_pattern.match(text) and i + 1 < len(bolds):
-                time_str = text
-                next_text = bolds[i + 1].get_text(strip=True)
+            # Find all channel links
+            channels_div = cat.find('div', class_='schedule__channels')
+            if channels_div:
+                links = channels_div.find_all('a', href=True)
                 
-                # Make sure next is not another time
-                if not self.time_pattern.match(next_text):
-                    # Check if next_text is a category header
-                    next_lower = next_text.lower()
+                for link in links:
+                    title = link.get_text(strip=True)
+                    href = link.get('href', '')
                     
-                    # Skip category headers
-                    is_category = False
-                    for cat_key in self.CATEGORY_KEYWORDS:
-                        if cat_key in next_lower:
-                            current_category = self.CATEGORY_KEYWORDS[cat_key]
-                            is_category = True
-                            break
+                    # Extract watch ID from href like /watch.php?id=123
+                    watch_id = ''
+                    if 'id=' in href:
+                        watch_id = href.split('id=')[-1].split('&')[0]
                     
-                    if not is_category:
+                    # Parse time from title if present (format: "12:30 Event Name")
+                    time_str = ''
+                    clean_title = title
+                    
+                    time_match = re.match(r'^(\d{1,2}:\d{2})\s+', title)
+                    if time_match:
+                        time_str = time_match.group(1)
+                        clean_title = title[time_match.end():]
+                    
+                    if title and watch_id:
                         events.append({
-                            'id': f"dl_{len(events)}",
+                            'id': f"dl_{watch_id}",
+                            'watch_id': watch_id,
+                            'title': clean_title or title,
+                            'category': normalized_cat,
+                            'original_category': cat_name,
                             'time': time_str,
-                            'title': next_text,
-                            'category': current_category,
-                            'date': current_date,
+                            'link': href,
+                            'embed_url': f"{self.base_url}/watch.php?id={watch_id}",
                         })
-                continue
-            
-            # Check for category headers in standalone elements
-            text_lower = text.lower()
-            for cat_key, cat_val in self.CATEGORY_KEYWORDS.items():
-                if cat_key in text_lower and len(text) < 30:
-                    current_category = cat_val
-                    break
+                        event_id += 1
         
         logger.info(f"Parsed {len(events)} events from schedule")
         return events
@@ -177,7 +190,8 @@ class DaddyLiveScraper:
                 'category': event['category'],
                 'source': 'daddylive',
                 'time': event.get('time', ''),
-                'date': event.get('date', ''),
+                'original_category': event.get('original_category', ''),
+                'embed_url': event.get('embed_url', ''),
             }
             channels.append(channel)
         
@@ -200,7 +214,7 @@ async def scrape_daddylive() -> List[Dict]:
 if __name__ == "__main__":
     async def test():
         print("=" * 60)
-        print("DaddyLive Scraper Test")
+        print("DaddyLive Scraper Test (dlstreams.top)")
         print("=" * 60)
         
         scraper = DaddyLiveScraper()
@@ -222,7 +236,8 @@ if __name__ == "__main__":
             for cat, cat_events in sorted(by_cat.items()):
                 print(f"\n🏆 {cat} ({len(cat_events)} events):")
                 for e in cat_events[:3]:
-                    print(f"   [{e['time']}] {e['title']}")
+                    time_str = f"[{e['time']}] " if e['time'] else ""
+                    print(f"   {time_str}{e['title'][:50]} (id={e['watch_id']})")
                 if len(cat_events) > 3:
                     print(f"   ... and {len(cat_events) - 3} more")
                     
