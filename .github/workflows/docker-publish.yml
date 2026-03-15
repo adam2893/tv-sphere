@@ -13,11 +13,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check secrets exist
+        run: |
+          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
+            echo "ERROR: DOCKER_USERNAME secret is not set!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.DOCKER_TOKEN }}" ]; then
+            echo "ERROR: DOCKER_TOKEN secret is not set!"
+            exit 1
+          fi
+          echo "Secrets are configured correctly"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        run: docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_TOKEN }}"
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -26,5 +38,3 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/tv-sphere:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
