@@ -58,9 +58,11 @@ STREAMED_API = "https://streamed.pk/api"
 
 # --- Global Caches ---
 catalog_cache: Dict = {}
-stream_cache: Dict = {}
 catalog_cache_lock = asyncio.Lock()
-stream_cache_lock = asyncio.Lock()
+
+# --- Active stream resolvers (to prevent duplicate resolutions) ---
+active_resolutions: Dict = {}
+resolution_lock = asyncio.Lock()
 
 # --- Categories ---
 CATEGORIES = {
@@ -78,6 +80,11 @@ CATEGORIES = {
     "Boxing": {"name": "Boxing", "icon": "🥊"},
     "MMA": {"name": "MMA", "icon": "🥋"},
     "Motor Sports": {"name": "Motor Sports", "icon": "🏎️"},
+    "Winter Sports": {"name": "Winter Sports", "icon": "⛷️"},
+    "Darts": {"name": "Darts", "icon": "🎯"},
+    "Snooker": {"name": "Snooker", "icon": "🎱"},
+    "Cycling": {"name": "Cycling", "icon": "🚴"},
+    "Horse Racing": {"name": "Horse Racing", "icon": "🐴"},
     
     # TV Shows
     "TV Shows": {"name": "TV Shows", "icon": "📺"},
@@ -280,8 +287,11 @@ async def get_stream_embeds(event_id: str) -> List[Dict]:
         return []
 
 
-async def resolve_m3u8(embed_url: str) -> Optional[Dict]:
-    """Resolve embed to M3U8 using Playwright."""
+async def resolve_and_stream(embed_url: str, quality: str = "best"):
+    """
+    Resolve embed and stream immediately.
+    Returns a tuple of (m3u8_content, headers) or (None, None) on failure.
+    """
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     stream_info = {}
     
@@ -301,40 +311,40 @@ async def resolve_m3u8(embed_url: str) -> Optional[Dict]:
                 if "url" in stream_info:
                     return
                 url = request.url
-                if ".m3u" in url and "http" in url and "narakathegame" not in url:
+                # Look for M3U8 or MP4 streams
+                if (".m3u" in url or ".mp4" in url) and "http" in url:
                     try:
                         headers = await request.all_headers()
-                        logging.info(f"Found M3U8: {url[:100]}...")
-                        logging.info(f"Request headers: {list(headers.keys())}")
+                        logging.info(f"Found stream: {url[:100]}...")
                         stream_info['url'] = url
                         stream_info['headers'] = {
                             "User-Agent": user_agent,
                             "Referer": headers.get("referer", embed_url),
                             "Origin": headers.get("origin", ""),
-                            "Accept": headers.get("accept", "*/*"),
                         }
-                        # Log important headers
-                        for key in ["referer", "origin", "accept", "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site"]:
-                            val = headers.get(key, "")
-                            if val:
-                                logging.info(f"  Header {key}: {val[:100]}")
                     except Exception as e:
                         logging.error(f"Error capturing headers: {e}")
             
             page.on("request", handle_request)
             
             try:
-                await page.goto(embed_url, wait_until="domcontentloaded", timeout=25000)
+                await page.goto(embed_url, wait_until="networkidle", timeout=30000)
                 
-                for _ in range(5):
+                # Try to click play button if no stream found yet
+                for _ in range(10):
                     if "url" in stream_info:
                         break
-                    for sel in ["button.vjs-big-play-button", ".play-button", "#player"]:
+                    for sel in ["button.vjs-big-play-button", ".play-button", "#player", ".vjs-big-play-button", "[data-play]"]:
                         try:
                             await page.locator(sel).first.click(timeout=1000, force=True)
                         except:
                             pass
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1)
+                    
+                # Wait a bit more for stream to appear
+                if "url" not in stream_info:
+                    await asyncio.sleep(3)
+                    
             finally:
                 await context.close()
                 await browser.close()
@@ -342,186 +352,31 @@ async def resolve_m3u8(embed_url: str) -> Optional[Dict]:
     except Exception as e:
         logging.error(f"Playwright error: {e}")
     
-    return stream_info if "url" in stream_info else None
-
-
-async def get_stream_for_channel(channel_id: str) -> List[Dict]:
-    """Get streams for a channel."""
+    if "url" not in stream_info:
+        logging.warning(f"No stream found for {embed_url}")
+        return None, None
     
-    # Check cache
-    async with stream_cache_lock:
-        cached = stream_cache.get(channel_id)
-        if cached and time.time() < cached['expires']:
-            return cached['streams']
+    # Immediately fetch the M3U8 content
+    m3u8_url = stream_info['url']
+    headers = stream_info['headers']
     
-    streams = []
+    logging.info(f"Fetching M3U8 content: {m3u8_url[:100]}...")
     
-    # Streamed.pk events
-    if channel_id.startswith("st_"):
-        event_id = channel_id[3:]
-        embeds = await get_stream_embeds(event_id)
-        
-        for embed in embeds[:3]:
-            try:
-                logging.info(f"Resolving Streamed.pk stream: {embed['embed_url']}")
-                result = await resolve_m3u8(embed['embed_url'])
-                if result and 'url' in result:
-                    # Route through our proxy with headers
-                    m3u8_url = result['url']
-                    headers_b64 = base64.b64encode(json.dumps(result['headers']).encode()).decode()
-                    proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(m3u8_url)}&headers={headers_b64}&sig={sign_url(m3u8_url)}"
-                    
-                    streams.append({
-                        "title": f"{embed['source'].title()} - Stream {embed['stream_no']} ({embed['quality']})",
-                        "url": proxy_url,
-                    })
-                    logging.info(f"Got stream URL: {m3u8_url[:80]}...")
-                    break
-            except Exception as e:
-                logging.error(f"Error resolving stream: {e}")
-                continue
-    
-    # DaddyLive channels - resolve embed to M3U8
-    elif channel_id.startswith("dl_"):
-        channels = await get_all_channels()
-        channel = next((c for c in channels if c['id'] == channel_id), None)
-        if channel:
-            embed_url = channel.get('embed_url')
-            if embed_url:
-                logging.info(f"Resolving DaddyLive stream: {embed_url}")
-                result = await resolve_m3u8(embed_url)
-                if result and 'url' in result:
-                    # Route through our proxy with headers
-                    m3u8_url = result['url']
-                    headers_b64 = base64.b64encode(json.dumps(result['headers']).encode()).decode()
-                    sig = sign_url(m3u8_url)
-                    proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(m3u8_url)}&headers={headers_b64}&sig={sig}"
-                    
-                    logging.info(f"Generated proxy URL - M3U8: {m3u8_url[:80]}...")
-                    logging.info(f"Generated proxy URL - Sig: {sig[:20]}...")
-                    
-                    streams.append({
-                        "title": f"{channel['name']} - Live",
-                        "url": proxy_url,
-                    })
-                else:
-                    logging.warning(f"Could not resolve stream for {channel['name']}")
-                    streams.append({
-                        "title": f"{channel['name']} - Stream unavailable",
-                        "url": "#",
-                        "description": "Could not resolve stream - try again later",
-                    })
-            else:
-                streams.append({
-                    "title": f"{channel['name']} - No embed URL",
-                    "url": "#",
-                    "description": "Stream not available",
-                })
-    
-    # Thai channels
-    elif channel_id.startswith("thai_"):
-        # Return the stream page URL (needs resolution at play time)
-        channels = await scrape_thai_channels()
-        channel = next((c for c in channels if c['id'] == channel_id), None)
-        if channel:
-            streams.append({
-                "title": f"{channel['name']} (Thai)",
-                "url": channel.get('stream_url', ''),
-                "description": "Thai TV - may require geolocation",
-            })
-    
-    # Australian channels  
-    elif channel_id.startswith("aus_"):
-        channels = await scrape_australian_channels()
-        channel = next((c for c in channels if c['id'] == channel_id), None)
-        if channel:
-            streams.append({
-                "title": f"{channel['name']} (Australia)",
-                "url": channel.get('stream_url', '#'),
-                "description": "Australian TV - requires Australian IP",
-            })
-    
-    # Cache
-    if streams:
-        async with stream_cache_lock:
-            stream_cache[channel_id] = {'streams': streams, 'expires': time.time() + STREAM_CACHE_DURATION}
-    
-    return streams
-
-
-# --- Proxy Engine ---
-
-@app.route("/proxy")
-async def proxy_stream():
-    """Proxy M3U8 streams."""
-    target_url = request.args.get("url")
-    headers_b64 = request.args.get("headers")
-    sig = request.args.get("sig")
-
-    logging.info(f"Proxy called - url={bool(target_url)}, headers={bool(headers_b64)}, sig={bool(sig)}")
-    
-    if not target_url:
-        return "Missing URL", 400
-    
-    if not sig:
-        logging.warning("Proxy request missing signature")
-        return "Missing signature", 403
-    
-    # Debug logging
-    expected_sig = sign_url(target_url)
-    logging.info(f"Proxy request - URL: {target_url[:80]}...")
-    logging.info(f"Proxy request - Sig type: {type(sig)}, Expected type: {type(expected_sig)}")
-    logging.info(f"Proxy request - Sig len: {len(sig)}, Expected len: {len(expected_sig)}")
-    logging.info(f"Proxy request - Got sig: {sig[:20]}... Expected sig: {expected_sig[:20]}...")
-    
-    if not hmac.compare_digest(sig, expected_sig):
-        logging.warning(f"Signature mismatch for proxy request")
-        return "Forbidden - signature mismatch", 403
-    
-    logging.info("Signature verified, fetching stream...")
-
     try:
-        headers = json.loads(base64.b64decode(headers_b64).decode()) if headers_b64 else {}
-    except:
-        headers = {}
-
-    for key in ["Host", "Content-Length", "Transfer-Encoding", "Connection"]:
-        headers.pop(key, None)
-    
-    logging.info(f"Fetching with headers: {headers}")
-
-    async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
-        try:
-            resp = await session.get(target_url, headers=headers)
-            
-            logging.info(f"Upstream response: {resp.status_code} - {resp.headers.get('Content-Type', 'unknown')}")
+        async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
+            resp = await session.get(m3u8_url, headers=headers)
             
             if resp.status_code != 200:
-                logging.warning(f"Upstream error: {resp.content[:500]}")
+                logging.error(f"M3U8 fetch failed: {resp.status_code}")
+                return None, None
             
-            if "mpegurl" in resp.headers.get("Content-Type", "") or target_url.endswith(".m3u8"):
-                text = resp.content.decode("utf-8")
-                new_lines = []
-                
-                for line in text.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if line.startswith("#"):
-                        new_lines.append(line)
-                    else:
-                        abs_url = urljoin(target_url, line)
-                        h_b64 = base64.b64encode(json.dumps(headers).encode()).decode()
-                        proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(abs_url)}&headers={h_b64}&sig={sign_url(abs_url)}"
-                        new_lines.append(proxy_url)
-                
-                return Response("\n".join(new_lines), mimetype="application/vnd.apple.mpegurl")
+            content = resp.content.decode("utf-8")
+            logging.info(f"Got M3U8 content: {len(content)} bytes")
+            return content, headers, m3u8_url
             
-            return Response(resp.content, status=resp.status_code, mimetype=resp.headers.get("Content-Type", ""))
-            
-        except Exception as e:
-            logging.error(f"Proxy error: {e}")
-            return str(e), 500
+    except Exception as e:
+        logging.error(f"Error fetching M3U8: {e}")
+        return None, None
 
 
 # --- Routes ---
@@ -544,7 +399,7 @@ async def manifest():
     
     return jsonify({
         "id": "org.stremio.tvsphere",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "name": "TV Sphere",
         "description": "Live TV from Sports, Thai & Australian channels",
         "logo": url_for("serve_logo", _external=True),
@@ -604,18 +459,6 @@ async def meta(type: str, id: str):
     cat = channel.get("category", "Other")
     cat_info = CATEGORIES.get(cat, {"name": cat, "icon": "📺"})
     
-    # Determine source info
-    source_name = channel.get("source", "unknown")
-    source_labels = {
-        "streamed": "Streamed.pk",
-        "daddylive": "DaddyLive",
-        "adintrend": "Thai TV",
-        "freeview": "Freeview AU",
-        "abc-iview": "ABC iView",
-        "sbs": "SBS On Demand",
-        "10play": "10Play",
-    }
-    
     meta_data = {
         "id": channel["id"],
         "type": "tv",
@@ -629,17 +472,121 @@ async def meta(type: str, id: str):
         "links": [],
     }
     
-    # Add source-specific info
-    if source_name in source_labels:
-        meta_data["description"] += f"\n\nSource: {source_labels[source_name]}"
-    
     return jsonify({"meta": meta_data})
 
 
 @app.route("/stream/<type>/<id>.json")
 async def stream(type: str, id: str):
-    streams = await get_stream_for_channel(id)
+    """Return stream URL that points to our resolve-and-proxy endpoint."""
+    
+    # Generate a signed URL to our resolve endpoint
+    resolve_url = f"{url_for('resolve_stream', _external=True)}?id={id}&sig={sign_url(id)}"
+    
+    # Return a stream that points to our resolver
+    streams = [{
+        "title": "Live Stream",
+        "url": resolve_url,
+        "description": "Click to load stream",
+    }]
+    
     return jsonify({"streams": streams})
+
+
+@app.route("/resolve")
+async def resolve_stream():
+    """
+    Resolve embed and return M3U8 content directly.
+    This is called when user clicks play - we resolve fresh.
+    """
+    channel_id = request.args.get("id")
+    sig = request.args.get("sig")
+    
+    if not channel_id or not sig:
+        return "Missing parameters", 400
+    
+    if not hmac.compare_digest(sig, sign_url(channel_id)):
+        return "Forbidden", 403
+    
+    logging.info(f"Resolving stream for: {channel_id}")
+    
+    embed_url = None
+    
+    # Get embed URL based on channel type
+    if channel_id.startswith("st_"):
+        event_id = channel_id[3:]
+        embeds = await get_stream_embeds(event_id)
+        if embeds:
+            embed_url = embeds[0]['embed_url']
+            
+    elif channel_id.startswith("dl_"):
+        channels = await get_all_channels()
+        channel = next((c for c in channels if c['id'] == channel_id), None)
+        if channel:
+            embed_url = channel.get('embed_url')
+    
+    if not embed_url:
+        return "No embed URL found", 404
+    
+    # Resolve and get M3U8 content
+    m3u8_content, headers, m3u8_url = await resolve_and_stream(embed_url)
+    
+    if not m3u8_content:
+        return "Could not resolve stream", 500
+    
+    # Rewrite M3U8 URLs to go through our proxy
+    new_lines = []
+    for line in m3u8_content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            # Handle URI in EXT-X-KEY
+            if "URI=" in line:
+                import re
+                line = re.sub(
+                    r'URI="([^"]+)"',
+                    lambda m: f'URI="{url_for("proxy_stream", _external=True)}?url={quote(urljoin(m3u8_url, m.group(1)))}&sig={sign_url(urljoin(m3u8_url, m.group(1)))}"',
+                    line
+                )
+            new_lines.append(line)
+        else:
+            # Rewrite segment URLs through our proxy
+            abs_url = urljoin(m3u8_url, line)
+            h_b64 = base64.b64encode(json.dumps(headers).encode()).decode()
+            proxy_url = f"{url_for('proxy_stream', _external=True)}?url={quote(abs_url)}&headers={h_b64}&sig={sign_url(abs_url)}"
+            new_lines.append(proxy_url)
+    
+    return Response("\n".join(new_lines), mimetype="application/vnd.apple.mpegurl")
+
+
+@app.route("/proxy")
+async def proxy_stream():
+    """Proxy stream segments."""
+    target_url = request.args.get("url")
+    headers_b64 = request.args.get("headers")
+    sig = request.args.get("sig")
+
+    if not target_url:
+        return "Missing URL", 400
+    
+    if not sig or not hmac.compare_digest(sig, sign_url(target_url)):
+        return "Forbidden", 403
+
+    try:
+        headers = json.loads(base64.b64decode(headers_b64).decode()) if headers_b64 else {}
+    except:
+        headers = {}
+
+    for key in ["Host", "Content-Length", "Transfer-Encoding", "Connection"]:
+        headers.pop(key, None)
+
+    async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
+        try:
+            resp = await session.get(target_url, headers=headers)
+            return Response(resp.content, status=resp.status_code, mimetype=resp.headers.get("Content-Type", "video/MP2T"))
+        except Exception as e:
+            logging.error(f"Proxy error: {e}")
+            return str(e), 500
 
 
 # --- Debug API ---
