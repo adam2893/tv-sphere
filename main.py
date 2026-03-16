@@ -450,10 +450,13 @@ async def catalog(type: str, id: str, genre: str = None):
 @app.route("/meta/<type>/<id>.json")
 async def meta(type: str, id: str):
     """Return metadata for a specific channel/event."""
+    logging.info(f"Meta request for: {id}")
     channels = await get_all_channels()
     channel = next((c for c in channels if c["id"] == id), None)
     
     if not channel:
+        logging.warning(f"Channel not found: {id}")
+        logging.info(f"Available IDs: {[c['id'] for c in channels[:5]]}...")
         return jsonify({"meta": {}})
     
     cat = channel.get("category", "Other")
@@ -472,15 +475,19 @@ async def meta(type: str, id: str):
         "links": [],
     }
     
+    logging.info(f"Returning meta for: {channel['name']}")
     return jsonify({"meta": meta_data})
 
 
 @app.route("/stream/<type>/<id>.json")
 async def stream(type: str, id: str):
     """Return stream URL that points to our resolve-and-proxy endpoint."""
+    logging.info(f"Stream request for: {id}")
     
     # Generate a signed URL to our resolve endpoint
     resolve_url = f"{url_for('resolve_stream', _external=True)}?id={id}&sig={sign_url(id)}"
+    
+    logging.info(f"Generated resolve URL: {resolve_url}")
     
     # Return a stream that points to our resolver
     streams = [{
