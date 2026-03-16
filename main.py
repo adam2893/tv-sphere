@@ -285,6 +285,8 @@ async def resolve_m3u8(embed_url: str) -> Optional[Dict]:
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     stream_info = {}
     
+    logging.info(f"Playwright resolving: {embed_url}")
+    
     try:
         async with async_playwright() as p:
             try:
@@ -302,13 +304,22 @@ async def resolve_m3u8(embed_url: str) -> Optional[Dict]:
                 if ".m3u" in url and "http" in url and "narakathegame" not in url:
                     try:
                         headers = await request.all_headers()
+                        logging.info(f"Found M3U8: {url[:100]}...")
+                        logging.info(f"Request headers: {list(headers.keys())}")
                         stream_info['url'] = url
                         stream_info['headers'] = {
                             "User-Agent": user_agent,
                             "Referer": headers.get("referer", embed_url),
+                            "Origin": headers.get("origin", ""),
+                            "Accept": headers.get("accept", "*/*"),
                         }
-                    except:
-                        pass
+                        # Log important headers
+                        for key in ["referer", "origin", "accept", "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site"]:
+                            val = headers.get(key, "")
+                            if val:
+                                logging.info(f"  Header {key}: {val[:100]}")
+                    except Exception as e:
+                        logging.error(f"Error capturing headers: {e}")
             
             page.on("request", handle_request)
             
