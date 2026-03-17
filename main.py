@@ -271,11 +271,12 @@ async def get_stream_embeds(event_id: str) -> List[Dict]:
 
 async def resolve_stream(embed_url: str) -> tuple:
     """
-    Resolve embed to get M3U8 URL and headers.
-    Returns (m3u8_url, headers) or (None, None) on failure.
+    Resolve embed to get M3U8 content directly from browser response.
+    Captures content to avoid single-use token being burned.
+    Returns (m3u8_content, headers, m3u8_url) or (None, None, None) on failure.
     """
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    stream_info = {}
+    stream_data = {}
     
     logging.info(f"Playwright resolving: {embed_url}")
     
@@ -289,27 +290,39 @@ async def resolve_stream(embed_url: str) -> tuple:
             context = await browser.new_context(user_agent=user_agent, ignore_https_errors=True)
             page = await context.new_page()
             
-            async def handle_request(request):
-                if "url" in stream_info:
-                    return
-                url = request.url
-                # Look for M3U8 or MP4 streams
-                if (".m3u" in url or ".mp4" in url) and "http" in url:
-                    logging.info(f"Found stream URL: {url[:100]}...")
-                    stream_info['url'] = url
-                    stream_info['headers'] = {
-                        "User-Agent": user_agent,
-                        "Referer": embed_url,
-                    }
+            async def handle_response(response):
+                """Capture M3U8 content directly from response."""
+                url = response.url
+                status = response.status
+                
+                # Look for M3U8 responses
+                if ".m3u" in url and "http" in url and status == 200:
+                    try:
+                        content_type = response.headers.get("content-type", "")
+                        logging.info(f"Found M3U8 response: {url[:100]}... type={content_type}")
+                        body = await response.text()
+                        logging.info(f"M3U8 content captured: {len(body)} bytes")
+                        
+                        # Verify it's M3U8
+                        if body.strip().startswith("#EXT"):
+                            stream_data['url'] = url
+                            stream_data['content'] = body
+                            stream_data['headers'] = {
+                                "User-Agent": user_agent,
+                                "Referer": embed_url,
+                            }
+                            logging.info("Valid M3U8 captured!")
+                    except Exception as e:
+                        logging.error(f"Error capturing response: {e}")
             
-            page.on("request", handle_request)
+            page.on("response", handle_response)
             
             try:
                 await page.goto(embed_url, wait_until="domcontentloaded", timeout=25000)
                 
                 # Click play buttons
                 for _ in range(8):
-                    if "url" in stream_info:
+                    if "content" in stream_data:
                         break
                     for sel in ["button.vjs-big-play-button", ".play-button", "#player", "video"]:
                         try:
@@ -319,7 +332,7 @@ async def resolve_stream(embed_url: str) -> tuple:
                     await asyncio.sleep(0.5)
                 
                 # Wait more
-                if "url" not in stream_info:
+                if "content" not in stream_data:
                     await asyncio.sleep(3)
                     
             finally:
@@ -329,11 +342,12 @@ async def resolve_stream(embed_url: str) -> tuple:
     except Exception as e:
         logging.error(f"Playwright error: {e}")
     
-    if "url" not in stream_info:
+    if "content" not in stream_data:
         logging.warning(f"No stream found for {embed_url}")
-        return None, None
+        return None, None, None
     
-    return stream_info['url'], stream_info['headers']
+    logging.info(f"Returning M3U8: {len(stream_data['content'])} bytes")
+    return stream_data['content'], stream_data['headers'], stream_data['url']
 
 
 # --- Routes ---
@@ -458,22 +472,46 @@ async def stream(type: str, id: str):
         logging.warning(f"No embed URL for {id}")
         return jsonify({"streams": []})
     
-    # Resolve the stream
-    m3u8_url, headers = await resolve_stream(embed_url)
+    # Resolve the stream - returns content, headers, url
+    m3u8_content, headers, m3u8_url = await resolve_stream(embed_url)
     
-    if not m3u8_url:
+    if not m3u8_content:
         logging.warning(f"Could not resolve stream for {id}")
         return jsonify({"streams": []})
     
-    # Create proxy URL for the M3U8
+    # We have the M3U8 content directly! Rewrite it and return as data URL
     headers_b64 = base64.b64encode(json.dumps(headers).encode()).decode()
-    proxy_url = f"{url_for('proxy_m3u8', _external=True)}?url={quote(m3u8_url)}&headers={headers_b64}&sig={sign_url(m3u8_url)}"
     
-    logging.info(f"Returning stream for {id}: {proxy_url[:80]}...")
+    # Rewrite segment URLs through proxy
+    new_lines = []
+    for line in m3u8_content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            # Rewrite URI in EXT-X-KEY
+            if "URI=" in line:
+                line = re.sub(
+                    r'URI="([^"]+)"',
+                    lambda m: f'URI="{url_for("proxy_segment", _external=True)}?url={quote(urljoin(m3u8_url, m.group(1)))}&headers={headers_b64}&sig={sign_url(urljoin(m3u8_url, m.group(1)))}"',
+                    line
+                )
+            new_lines.append(line)
+        else:
+            # Rewrite segment URL
+            abs_url = urljoin(m3u8_url, line)
+            proxy_seg_url = f"{url_for('proxy_segment', _external=True)}?url={quote(abs_url)}&headers={headers_b64}&sig={sign_url(abs_url)}"
+            new_lines.append(proxy_seg_url)
+    
+    # Return as data URL (no need to fetch again!)
+    rewritten_m3u8 = "\n".join(new_lines)
+    data_url = f"data:application/vnd.apple.mpegurl;base64,{base64.b64encode(rewritten_m3u8.encode()).decode()}"
+    
+    logging.info(f"Returning stream for {id} with {len(new_lines)} M3U8 lines")
     
     streams = [{
         "title": "Live Stream",
-        "url": proxy_url,
+        "url": data_url,
     }]
     
     return jsonify({"streams": streams})
