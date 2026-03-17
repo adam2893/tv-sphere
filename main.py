@@ -32,7 +32,7 @@ from quart import (
     render_template,
 )
 from quart_cors import cors
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Route, Request
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
 
@@ -271,14 +271,41 @@ async def get_stream_embeds(event_id: str) -> List[Dict]:
 
 async def resolve_stream(embed_url: str) -> tuple:
     """
-    Resolve embed to get M3U8 content directly from browser response.
-    Captures content to avoid single-use token being burned.
+    Resolve embed to get M3U8 URL and content.
+    Uses route interception to capture M3U8 URL before it's requested.
     Returns (m3u8_content, headers, m3u8_url) or (None, None, None) on failure.
     """
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    stream_data = {}
+    
+    # Store captured data
+    captured = {
+        'm3u8_url': None,
+        'm3u8_content': None,
+        'headers': {
+            "User-Agent": user_agent,
+            "Referer": embed_url,
+        }
+    }
     
     logging.info(f"Playwright resolving: {embed_url}")
+    
+    async def handle_route(route: Route):
+        """Intercept requests - capture M3U8 URL and abort to preserve token."""
+        request = route.request
+        url = request.url
+        
+        # Check if this is an M3U8 request
+        if ".m3u8" in url or "playlist" in url.lower() or "m3u" in url.lower():
+            if "http" in url and captured['m3u8_url'] is None:
+                logging.info(f"INTERCEPTED M3U8 URL: {url[:100]}...")
+                captured['m3u8_url'] = url
+                
+                # Abort the request to preserve the token!
+                await route.abort()
+                return
+        
+        # Let other requests through
+        await route.continue_()
     
     try:
         async with async_playwright() as p:
@@ -290,50 +317,48 @@ async def resolve_stream(embed_url: str) -> tuple:
             context = await browser.new_context(user_agent=user_agent, ignore_https_errors=True)
             page = await context.new_page()
             
-            async def handle_response(response):
-                """Capture M3U8 content directly from response."""
-                url = response.url
-                status = response.status
-                
-                # Look for M3U8 responses
-                if ".m3u" in url and "http" in url and status == 200:
-                    try:
-                        content_type = response.headers.get("content-type", "")
-                        logging.info(f"Found M3U8 response: {url[:100]}... type={content_type}")
-                        body = await response.text()
-                        logging.info(f"M3U8 content captured: {len(body)} bytes")
-                        
-                        # Verify it's M3U8
-                        if body.strip().startswith("#EXT"):
-                            stream_data['url'] = url
-                            stream_data['content'] = body
-                            stream_data['headers'] = {
-                                "User-Agent": user_agent,
-                                "Referer": embed_url,
-                            }
-                            logging.info("Valid M3U8 captured!")
-                    except Exception as e:
-                        logging.error(f"Error capturing response: {e}")
-            
-            page.on("response", handle_response)
+            # Set up route interception
+            await page.route("**/*", handle_route)
             
             try:
-                await page.goto(embed_url, wait_until="domcontentloaded", timeout=25000)
+                await page.goto(embed_url, wait_until="domcontentloaded", timeout=30000)
                 
-                # Click play buttons
-                for _ in range(8):
-                    if "content" in stream_data:
+                # Try to click play buttons to trigger video loading
+                play_selectors = [
+                    "button.vjs-big-play-button",
+                    ".play-button", 
+                    "#player",
+                    "video",
+                    ".vjs-poster",
+                    "[onclick*='play']",
+                    ".video-container",
+                    "#videoPlayer",
+                ]
+                
+                for _ in range(10):
+                    if captured['m3u8_url']:
                         break
-                    for sel in ["button.vjs-big-play-button", ".play-button", "#player", "video"]:
+                    
+                    for sel in play_selectors:
                         try:
-                            await page.locator(sel).first.click(timeout=500, force=True)
+                            el = page.locator(sel).first
+                            if await el.is_visible(timeout=200):
+                                await el.click(timeout=500, force=True)
+                                await asyncio.sleep(0.3)
                         except:
                             pass
+                    
                     await asyncio.sleep(0.5)
                 
-                # Wait more
-                if "content" not in stream_data:
-                    await asyncio.sleep(3)
+                # Additional wait for lazy-loaded players
+                if not captured['m3u8_url']:
+                    logging.info("Waiting for player to load...")
+                    await asyncio.sleep(5)
+                    
+                if captured['m3u8_url']:
+                    logging.info(f"Found M3U8 URL: {captured['m3u8_url'][:100]}...")
+                else:
+                    logging.warning("No M3U8 URL captured")
                     
             finally:
                 await context.close()
@@ -341,13 +366,31 @@ async def resolve_stream(embed_url: str) -> tuple:
                 
     except Exception as e:
         logging.error(f"Playwright error: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
     
-    if "content" not in stream_data:
-        logging.warning(f"No stream found for {embed_url}")
-        return None, None, None
+    # If we captured the URL, now fetch the M3U8 content ourselves
+    if captured['m3u8_url']:
+        logging.info(f"Fetching M3U8 content for: {captured['m3u8_url'][:80]}...")
+        
+        try:
+            async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
+                resp = await session.get(captured['m3u8_url'], headers=captured['headers'])
+                
+                if resp.status_code == 200:
+                    content = resp.text
+                    if content.strip().startswith("#EXT"):
+                        logging.info(f"M3U8 content fetched: {len(content)} bytes")
+                        return content, captured['headers'], captured['m3u8_url']
+                    else:
+                        logging.error(f"Invalid M3U8 content: {content[:100]}")
+                else:
+                    logging.error(f"M3U8 fetch failed: {resp.status_code}")
+        except Exception as e:
+            logging.error(f"Error fetching M3U8: {e}")
     
-    logging.info(f"Returning M3U8: {len(stream_data['content'])} bytes")
-    return stream_data['content'], stream_data['headers'], stream_data['url']
+    logging.warning(f"No stream found for {embed_url}")
+    return None, None, None
 
 
 # --- Routes ---
@@ -370,7 +413,7 @@ async def manifest():
     
     return jsonify({
         "id": "org.stremio.tvsphere",
-        "version": "1.4.0",
+        "version": "1.5.0",
         "name": "TV Sphere",
         "description": "Live TV from Sports, Thai & Australian channels",
         "logo": url_for("serve_logo", _external=True),
@@ -479,7 +522,7 @@ async def stream(type: str, id: str):
         logging.warning(f"Could not resolve stream for {id}")
         return jsonify({"streams": []})
     
-    # We have the M3U8 content directly! Rewrite it and return as data URL
+    # We have the M3U8 content! Rewrite it and return as data URL
     headers_b64 = base64.b64encode(json.dumps(headers).encode()).decode()
     
     # Rewrite segment URLs through proxy
@@ -503,7 +546,7 @@ async def stream(type: str, id: str):
             proxy_seg_url = f"{url_for('proxy_segment', _external=True)}?url={quote(abs_url)}&headers={headers_b64}&sig={sign_url(abs_url)}"
             new_lines.append(proxy_seg_url)
     
-    # Return as data URL (no need to fetch again!)
+    # Return as data URL
     rewritten_m3u8 = "\n".join(new_lines)
     data_url = f"data:application/vnd.apple.mpegurl;base64,{base64.b64encode(rewritten_m3u8.encode()).decode()}"
     
@@ -515,65 +558,6 @@ async def stream(type: str, id: str):
     }]
     
     return jsonify({"streams": streams})
-
-
-@app.route("/proxy_m3u8")
-async def proxy_m3u8():
-    """Fetch and rewrite M3U8 through proxy."""
-    target_url = request.args.get("url")
-    headers_b64 = request.args.get("headers")
-    sig = request.args.get("sig")
-    
-    if not target_url or not sig:
-        return "Missing parameters", 400
-    
-    if not hmac.compare_digest(sig, sign_url(target_url)):
-        return "Forbidden", 403
-    
-    try:
-        headers = json.loads(base64.b64decode(headers_b64).decode()) if headers_b64 else {}
-    except:
-        headers = {}
-    
-    logging.info(f"Proxying M3U8: {target_url[:80]}...")
-    
-    async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
-        try:
-            resp = await session.get(target_url, headers=headers)
-            
-            if resp.status_code != 200:
-                logging.error(f"M3U8 fetch failed: {resp.status_code}")
-                return f"Upstream error: {resp.status_code}", 502
-            
-            content = resp.content.decode("utf-8")
-            
-            # Rewrite segment URLs through proxy
-            new_lines = []
-            for line in content.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("#"):
-                    # Rewrite URI in EXT-X-KEY
-                    if "URI=" in line:
-                        line = re.sub(
-                            r'URI="([^"]+)"',
-                            lambda m: f'URI="{url_for("proxy_segment", _external=True)}?url={quote(urljoin(target_url, m.group(1)))}&headers={headers_b64}&sig={sign_url(urljoin(target_url, m.group(1)))}"',
-                            line
-                        )
-                    new_lines.append(line)
-                else:
-                    # Rewrite segment URL
-                    abs_url = urljoin(target_url, line)
-                    proxy_seg_url = f"{url_for('proxy_segment', _external=True)}?url={quote(abs_url)}&headers={headers_b64}&sig={sign_url(abs_url)}"
-                    new_lines.append(proxy_seg_url)
-            
-            logging.info(f"Returning rewritten M3U8 with {len(new_lines)} lines")
-            return Response("\n".join(new_lines), mimetype="application/vnd.apple.mpegurl")
-            
-        except Exception as e:
-            logging.error(f"Proxy error: {e}")
-            return str(e), 500
 
 
 @app.route("/proxy_segment")
