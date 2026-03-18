@@ -32,7 +32,7 @@ from quart import (
     render_template,
 )
 from quart_cors import cors
-from playwright.async_api import async_playwright, Route, Request
+from playwright.async_api import async_playwright, Route, Request, Response as PlaywrightResponse
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
 
@@ -93,6 +93,12 @@ CATEGORIES = {
     # Australian Categories
     "Australian General": {"name": "Australian General", "icon": "🇦🇺"},
     "Australian News": {"name": "Australian News", "icon": "📰"},
+    "Australian Entertainment": {"name": "Australian Entertainment", "icon": "🇦🇺"},
+    "Australian Movies": {"name": "Australian Movies", "icon": "🎬"},
+    "Australian Comedy": {"name": "Australian Comedy", "icon": "😂"},
+    "Australian Kids": {"name": "Australian Kids", "icon": "👶"},
+    "Australian Lifestyle": {"name": "Australian Lifestyle", "icon": "🏠"},
+    "Australian Indigenous": {"name": "Australian Indigenous", "icon": "🇦🇺"},
     
     "Other": {"name": "Other", "icon": "📺"},
 }
@@ -172,6 +178,8 @@ async def fetch_daddylive_events() -> List[Dict]:
         return channels
     except Exception as e:
         logging.error(f"Error fetching DaddyLive: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return []
 
 
@@ -271,8 +279,8 @@ async def get_stream_embeds(event_id: str) -> List[Dict]:
 
 async def resolve_stream(embed_url: str) -> tuple:
     """
-    Resolve embed to get M3U8 URL and content.
-    Uses route interception to capture M3U8 URL before it's requested.
+    Resolve embed to get M3U8 content directly.
+    Captures the M3U8 response body from browser - the ONLY way to get valid content.
     Returns (m3u8_content, headers, m3u8_url) or (None, None, None) on failure.
     """
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -289,23 +297,29 @@ async def resolve_stream(embed_url: str) -> tuple:
     
     logging.info(f"Playwright resolving: {embed_url}")
     
-    async def handle_route(route: Route):
-        """Intercept requests - capture M3U8 URL and abort to preserve token."""
-        request = route.request
-        url = request.url
+    async def handle_response(response: PlaywrightResponse):
+        """Capture M3U8 response body directly from browser."""
+        url = response.url
+        status = response.status
         
-        # Check if this is an M3U8 request
-        if ".m3u8" in url or "playlist" in url.lower() or "m3u" in url.lower():
-            if "http" in url and captured['m3u8_url'] is None:
-                logging.info(f"INTERCEPTED M3U8 URL: {url[:100]}...")
-                captured['m3u8_url'] = url
+        # Check for M3U8 responses
+        if (".m3u8" in url or ".m3u" in url or "playlist" in url.lower()) and status == 200:
+            try:
+                content_type = response.headers.get("content-type", "")
+                logging.info(f"Found M3U8 response: {url[:80]}... status={status}")
                 
-                # Abort the request to preserve the token!
-                await route.abort()
-                return
-        
-        # Let other requests through
-        await route.continue_()
+                # Get the response body - this is the actual M3U8 content!
+                body = await response.text()
+                
+                # Verify it's M3U8
+                if body.strip().startswith("#EXT"):
+                    captured['m3u8_url'] = url
+                    captured['m3u8_content'] = body
+                    logging.info(f"CAPTURED M3U8 content: {len(body)} bytes from browser response!")
+                else:
+                    logging.warning(f"Response not valid M3U8: {body[:100]}")
+            except Exception as e:
+                logging.error(f"Error capturing response: {e}")
     
     try:
         async with async_playwright() as p:
@@ -317,8 +331,8 @@ async def resolve_stream(embed_url: str) -> tuple:
             context = await browser.new_context(user_agent=user_agent, ignore_https_errors=True)
             page = await context.new_page()
             
-            # Set up route interception
-            await page.route("**/*", handle_route)
+            # Listen for responses
+            page.on("response", handle_response)
             
             try:
                 await page.goto(embed_url, wait_until="domcontentloaded", timeout=30000)
@@ -333,32 +347,29 @@ async def resolve_stream(embed_url: str) -> tuple:
                     "[onclick*='play']",
                     ".video-container",
                     "#videoPlayer",
+                    ".jw-media",
                 ]
                 
-                for _ in range(10):
-                    if captured['m3u8_url']:
+                for attempt in range(15):
+                    if captured['m3u8_content']:
+                        logging.info(f"M3U8 captured on attempt {attempt+1}")
                         break
                     
                     for sel in play_selectors:
                         try:
                             el = page.locator(sel).first
-                            if await el.is_visible(timeout=200):
+                            if await el.is_visible(timeout=100):
                                 await el.click(timeout=500, force=True)
-                                await asyncio.sleep(0.3)
+                                await asyncio.sleep(0.2)
                         except:
                             pass
                     
                     await asyncio.sleep(0.5)
                 
-                # Additional wait for lazy-loaded players
-                if not captured['m3u8_url']:
-                    logging.info("Waiting for player to load...")
+                # Additional wait
+                if not captured['m3u8_content']:
+                    logging.info("Waiting for player to fully load...")
                     await asyncio.sleep(5)
-                    
-                if captured['m3u8_url']:
-                    logging.info(f"Found M3U8 URL: {captured['m3u8_url'][:100]}...")
-                else:
-                    logging.warning("No M3U8 URL captured")
                     
             finally:
                 await context.close()
@@ -369,27 +380,11 @@ async def resolve_stream(embed_url: str) -> tuple:
         import traceback
         logging.error(traceback.format_exc())
     
-    # If we captured the URL, now fetch the M3U8 content ourselves
-    if captured['m3u8_url']:
-        logging.info(f"Fetching M3U8 content for: {captured['m3u8_url'][:80]}...")
-        
-        try:
-            async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
-                resp = await session.get(captured['m3u8_url'], headers=captured['headers'])
-                
-                if resp.status_code == 200:
-                    content = resp.text
-                    if content.strip().startswith("#EXT"):
-                        logging.info(f"M3U8 content fetched: {len(content)} bytes")
-                        return content, captured['headers'], captured['m3u8_url']
-                    else:
-                        logging.error(f"Invalid M3U8 content: {content[:100]}")
-                else:
-                    logging.error(f"M3U8 fetch failed: {resp.status_code}")
-        except Exception as e:
-            logging.error(f"Error fetching M3U8: {e}")
+    if captured['m3u8_content']:
+        logging.info(f"Returning captured M3U8: {len(captured['m3u8_content'])} bytes")
+        return captured['m3u8_content'], captured['headers'], captured['m3u8_url']
     
-    logging.warning(f"No stream found for {embed_url}")
+    logging.warning(f"No M3U8 captured for {embed_url}")
     return None, None, None
 
 
@@ -413,7 +408,7 @@ async def manifest():
     
     return jsonify({
         "id": "org.stremio.tvsphere",
-        "version": "1.5.0",
+        "version": "1.6.0",
         "name": "TV Sphere",
         "description": "Live TV from Sports, Thai & Australian channels",
         "logo": url_for("serve_logo", _external=True),
@@ -496,6 +491,8 @@ async def stream(type: str, id: str):
     logging.info(f"Stream request for: {id}")
     
     embed_url = None
+    stream_url = None
+    channel_data = None
     
     if id.startswith("st_"):
         event_id = id[3:]
@@ -509,7 +506,33 @@ async def stream(type: str, id: str):
         channel = next((c for c in channels if c['id'] == id), None)
         if channel:
             embed_url = channel.get('embed_url')
+            channel_data = channel
             logging.info(f"Got embed URL from DaddyLive: {embed_url}")
+    
+    elif id.startswith("aus_"):
+        # Australian channels might have direct stream URLs
+        channels = await get_all_channels()
+        channel = next((c for c in channels if c['id'] == id), None)
+        if channel:
+            stream_url = channel.get('stream_url')
+            channel_data = channel
+            logging.info(f"Got stream URL for Australian channel: {stream_url}")
+    
+    elif id.startswith("thai_"):
+        channels = await get_all_channels()
+        channel = next((c for c in channels if c['id'] == id), None)
+        if channel:
+            embed_url = channel.get('embed_url')
+            channel_data = channel
+            logging.info(f"Got embed URL for Thai channel: {embed_url}")
+    
+    # Handle direct stream URLs (no Playwright needed)
+    if stream_url and stream_url.startswith("http"):
+        logging.info(f"Returning direct stream URL: {stream_url}")
+        return jsonify({"streams": [{
+            "title": "Live Stream",
+            "url": stream_url,
+        }]})
     
     if not embed_url:
         logging.warning(f"No embed URL for {id}")

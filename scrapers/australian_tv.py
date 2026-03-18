@@ -31,29 +31,29 @@ class FreeviewScraper:
         self.base_url = base_url
         self.client: Optional[httpx.AsyncClient] = None
         
-        # Major Australian channels
-        self.channels = {
-            'abc': {'name': 'ABC', 'network': 'ABC', 'category': 'General'},
-            'abc-news': {'name': 'ABC News', 'network': 'ABC', 'category': 'News'},
-            'abc-comedy': {'name': 'ABC Comedy', 'network': 'ABC', 'category': 'Comedy'},
-            'abc-kids': {'name': 'ABC Kids', 'network': 'ABC', 'category': 'Kids'},
-            'sbs': {'name': 'SBS', 'network': 'SBS', 'category': 'General'},
-            'sbs-viceland': {'name': 'SBS Viceland', 'network': 'SBS', 'category': 'Entertainment'},
-            'sbs-food': {'name': 'SBS Food', 'network': 'SBS', 'category': 'Lifestyle'},
-            'sbs-world-movies': {'name': 'SBS World Movies', 'network': 'SBS', 'category': 'Movies'},
-            'nITV': {'name': 'NITV', 'network': 'SBS', 'category': 'Indigenous'},
-            'seven': {'name': 'Channel 7', 'network': 'Seven', 'category': 'General'},
-            '7mate': {'name': '7mate', 'network': 'Seven', 'category': 'Entertainment'},
-            '7two': {'name': '7two', 'network': 'Seven', 'category': 'Entertainment'},
-            '7flix': {'name': '7flix', 'network': 'Seven', 'category': 'Movies'},
-            'nine': {'name': 'Channel 9', 'network': 'Nine', 'category': 'General'},
-            '9go': {'name': '9Go!', 'network': 'Nine', 'category': 'Entertainment'},
-            '9gem': {'name': '9Gem', 'network': 'Nine', 'category': 'Entertainment'},
-            '9life': {'name': '9Life', 'network': 'Nine', 'category': 'Lifestyle'},
-            '10': {'name': 'Channel 10', 'network': 'Ten', 'category': 'General'},
-            '10-bold': {'name': '10 Bold', 'network': 'Ten', 'category': 'Entertainment'},
-            '10-peach': {'name': '10 Peach', 'network': 'Ten', 'category': 'Entertainment'},
-        }
+        # Major Australian channels with their stream URLs where available
+        self.channels = [
+            {'id': 'aus_abc_main', 'name': 'ABC', 'network': 'ABC', 'category': 'Australian General', 'stream_url': None},
+            {'id': 'aus_abc-news', 'name': 'ABC News', 'network': 'ABC', 'category': 'Australian News', 'stream_url': None},
+            {'id': 'aus_abc-comedy', 'name': 'ABC Comedy', 'network': 'ABC', 'category': 'Australian Comedy', 'stream_url': None},
+            {'id': 'aus_abc-kids', 'name': 'ABC Kids', 'network': 'ABC', 'category': 'Australian Kids', 'stream_url': None},
+            {'id': 'aus_sbs', 'name': 'SBS', 'network': 'SBS', 'category': 'Australian General', 'stream_url': None},
+            {'id': 'aus_sbs-viceland', 'name': 'SBS Viceland', 'network': 'SBS', 'category': 'Australian Entertainment', 'stream_url': None},
+            {'id': 'aus_sbs-food', 'name': 'SBS Food', 'network': 'SBS', 'category': 'Australian Lifestyle', 'stream_url': None},
+            {'id': 'aus_sbs-world-movies', 'name': 'SBS World Movies', 'network': 'SBS', 'category': 'Australian Movies', 'stream_url': None},
+            {'id': 'aus_nitv', 'name': 'NITV', 'network': 'SBS', 'category': 'Australian Indigenous', 'stream_url': None},
+            {'id': 'aus_seven', 'name': 'Channel 7', 'network': 'Seven', 'category': 'Australian General', 'stream_url': None},
+            {'id': 'aus_7mate', 'name': '7mate', 'network': 'Seven', 'category': 'Australian Entertainment', 'stream_url': None},
+            {'id': 'aus_7two', 'name': '7two', 'network': 'Seven', 'category': 'Australian Entertainment', 'stream_url': None},
+            {'id': 'aus_7flix', 'name': '7flix', 'network': 'Seven', 'category': 'Australian Movies', 'stream_url': None},
+            {'id': 'aus_nine', 'name': 'Channel 9', 'network': 'Nine', 'category': 'Australian General', 'stream_url': None},
+            {'id': 'aus_9go', 'name': '9Go!', 'network': 'Nine', 'category': 'Australian Entertainment', 'stream_url': None},
+            {'id': 'aus_9gem', 'name': '9Gem', 'network': 'Nine', 'category': 'Australian Entertainment', 'stream_url': None},
+            {'id': 'aus_9life', 'name': '9Life', 'network': 'Nine', 'category': 'Australian Lifestyle', 'stream_url': None},
+            {'id': 'aus_ten', 'name': 'Channel 10', 'network': 'Ten', 'category': 'Australian General', 'stream_url': None},
+            {'id': 'aus_10-bold', 'name': '10 Bold', 'network': 'Ten', 'category': 'Australian Entertainment', 'stream_url': None},
+            {'id': 'aus_10-peach', 'name': '10 Peach', 'network': 'Ten', 'category': 'Australian Entertainment', 'stream_url': None},
+        ]
     
     async def initialize(self):
         self.client = httpx.AsyncClient(
@@ -73,14 +73,15 @@ class FreeviewScraper:
         """Get list of Australian channels."""
         channels = []
         
-        for channel_id, info in self.channels.items():
+        for ch in self.channels:
             channels.append({
-                'id': f"aus_{channel_id}",
-                'name': info['name'],
-                'category': f"Australian {info['category']}",
+                'id': ch['id'],
+                'name': ch['name'],
+                'category': ch['category'],
                 'source': 'freeview',
-                'network': info['network'],
-                'stream_url': None,  # Requires separate API calls per service
+                'network': ch['network'],
+                'stream_url': ch.get('stream_url'),
+                'embed_url': None,  # No embed URL for these
             })
         
         return channels
@@ -126,29 +127,40 @@ class ABCiViewScraper:
             if response.status_code == 200:
                 data = response.json()
                 
-                for channel in data:
-                    channels.append({
-                        'id': f"aus_abc_{channel.get('id', '')}",
-                        'name': f"ABC {channel.get('title', 'Channel')}",
-                        'category': 'Australian General',
-                        'source': 'abc-iview',
-                        'stream_url': channel.get('liveStreamURL'),
-                    })
-            else:
+                # Handle both list and dict responses
+                if isinstance(data, list):
+                    channel_list = data
+                elif isinstance(data, dict) and 'channels' in data:
+                    channel_list = data['channels']
+                else:
+                    channel_list = []
+                
+                for channel in channel_list:
+                    if isinstance(channel, dict):
+                        channels.append({
+                            'id': f"aus_abc_{channel.get('id', channel.get('slug', ''))}",
+                            'name': f"ABC {channel.get('title', channel.get('name', 'Channel'))}",
+                            'category': 'Australian General',
+                            'source': 'abc-iview',
+                            'stream_url': channel.get('liveStreamURL') or channel.get('stream_url'),
+                            'embed_url': None,
+                        })
+            
+            if not channels:
                 # Fallback to known channels
                 channels = [
-                    {'id': 'aus_abc_main', 'name': 'ABC', 'category': 'Australian General', 'source': 'abc-iview'},
-                    {'id': 'aus_abc_news', 'name': 'ABC News', 'category': 'Australian News', 'source': 'abc-iview'},
-                    {'id': 'aus_abc_comedy', 'name': 'ABC Comedy', 'category': 'Australian Comedy', 'source': 'abc-iview'},
-                    {'id': 'aus_abc_kids', 'name': 'ABC Kids', 'category': 'Australian Kids', 'source': 'abc-iview'},
+                    {'id': 'aus_abc_main', 'name': 'ABC', 'category': 'Australian General', 'source': 'abc-iview', 'stream_url': None, 'embed_url': None},
+                    {'id': 'aus_abc_news', 'name': 'ABC News', 'category': 'Australian News', 'source': 'abc-iview', 'stream_url': None, 'embed_url': None},
+                    {'id': 'aus_abc_comedy', 'name': 'ABC Comedy', 'category': 'Australian Comedy', 'source': 'abc-iview', 'stream_url': None, 'embed_url': None},
+                    {'id': 'aus_abc_kids', 'name': 'ABC Kids', 'category': 'Australian Kids', 'source': 'abc-iview', 'stream_url': None, 'embed_url': None},
                 ]
                 
         except Exception as e:
             logger.error(f"Error fetching ABC channels: {e}")
             # Return known channels as fallback
             channels = [
-                {'id': 'aus_abc_main', 'name': 'ABC', 'category': 'Australian General', 'source': 'abc-iview'},
-                {'id': 'aus_abc_news', 'name': 'ABC News', 'category': 'Australian News', 'source': 'abc-iview'},
+                {'id': 'aus_abc_main', 'name': 'ABC', 'category': 'Australian General', 'source': 'abc-iview', 'stream_url': None, 'embed_url': None},
+                {'id': 'aus_abc_news', 'name': 'ABC News', 'category': 'Australian News', 'source': 'abc-iview', 'stream_url': None, 'embed_url': None},
             ]
         
         return channels
@@ -186,11 +198,11 @@ class SBSOnDemandScraper:
         """Get SBS live channels."""
         # Known SBS channels
         return [
-            {'id': 'aus_sbs_main', 'name': 'SBS', 'category': 'Australian General', 'source': 'sbs'},
-            {'id': 'aus_sbs_viceland', 'name': 'SBS Viceland', 'category': 'Australian Entertainment', 'source': 'sbs'},
-            {'id': 'aus_sbs_food', 'name': 'SBS Food', 'category': 'Australian Lifestyle', 'source': 'sbs'},
-            {'id': 'aus_sbs_world', 'name': 'SBS World Movies', 'category': 'Australian Movies', 'source': 'sbs'},
-            {'id': 'aus_sbs_nitv', 'name': 'NITV', 'category': 'Australian Indigenous', 'source': 'sbs'},
+            {'id': 'aus_sbs_main', 'name': 'SBS', 'category': 'Australian General', 'source': 'sbs', 'stream_url': None, 'embed_url': None},
+            {'id': 'aus_sbs_viceland', 'name': 'SBS Viceland', 'category': 'Australian Entertainment', 'source': 'sbs', 'stream_url': None, 'embed_url': None},
+            {'id': 'aus_sbs_food', 'name': 'SBS Food', 'category': 'Australian Lifestyle', 'source': 'sbs', 'stream_url': None, 'embed_url': None},
+            {'id': 'aus_sbs_world', 'name': 'SBS World Movies', 'category': 'Australian Movies', 'source': 'sbs', 'stream_url': None, 'embed_url': None},
+            {'id': 'aus_sbs_nitv', 'name': 'NITV', 'category': 'Australian Indigenous', 'source': 'sbs', 'stream_url': None, 'embed_url': None},
         ]
 
 
@@ -221,9 +233,9 @@ class TenPlayScraper:
     async def get_live_channels(self) -> List[Dict]:
         """Get Network Ten channels."""
         return [
-            {'id': 'aus_ten_main', 'name': 'Channel 10', 'category': 'Australian General', 'source': '10play'},
-            {'id': 'aus_ten_bold', 'name': '10 Bold', 'category': 'Australian Entertainment', 'source': '10play'},
-            {'id': 'aus_ten_peach', 'name': '10 Peach', 'category': 'Australian Entertainment', 'source': '10play'},
+            {'id': 'aus_ten_main', 'name': 'Channel 10', 'category': 'Australian General', 'source': '10play', 'stream_url': None, 'embed_url': None},
+            {'id': 'aus_ten_bold', 'name': '10 Bold', 'category': 'Australian Entertainment', 'source': '10play', 'stream_url': None, 'embed_url': None},
+            {'id': 'aus_ten_peach', 'name': '10 Peach', 'category': 'Australian Entertainment', 'source': '10play', 'stream_url': None, 'embed_url': None},
         ]
 
 
@@ -284,6 +296,7 @@ if __name__ == "__main__":
         for source, chs in by_source.items():
             print(f"\n📺 {source.upper()} ({len(chs)} channels):")
             for ch in chs:
-                print(f"   {ch['name']} - {ch['category']}")
+                stream = "✓" if ch.get('stream_url') else "✗"
+                print(f"   [{stream}] {ch['name']} - {ch['category']}")
     
     asyncio.run(test())

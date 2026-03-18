@@ -57,15 +57,17 @@ class DaddyLiveScraper:
         'upcoming': 'PPV',
     }
     
-    # Official DaddyLive domains (they redirect to current working domain)
+    # Official DaddyLive domains with fallbacks
     OFFICIAL_DOMAINS = [
+        "https://dlstreams.top",  # Direct to current working domain
         "https://dlhd.link",
         "https://dlhd.dad",
     ]
     
-    def __init__(self, base_url: str = "https://dlhd.link"):
+    def __init__(self, base_url: str = None):
         self.base_url = base_url
         self.client: Optional[httpx.AsyncClient] = None
+        self.resolved_base_url = None
     
     async def initialize(self):
         """Initialize the HTTP client."""
@@ -78,7 +80,6 @@ class DaddyLiveScraper:
                 "Accept-Language": "en-US,en;q=0.9",
             }
         )
-        self.resolved_base_url = None  # Will store the actual domain after redirect
     
     async def close(self):
         """Close the HTTP client."""
@@ -94,24 +95,32 @@ class DaddyLiveScraper:
         if not self.client:
             await self.initialize()
         
-        try:
-            html = await self._fetch_schedule_page()
-            return self._parse_schedule_html(html)
-        except Exception as e:
-            logger.error(f"Error getting events: {e}")
-            return []
+        # Try each domain in order
+        for domain in self.OFFICIAL_DOMAINS:
+            try:
+                logger.info(f"Trying domain: {domain}")
+                html = await self._fetch_schedule_page(domain)
+                events = self._parse_schedule_html(html)
+                if events:
+                    logger.info(f"Successfully fetched {len(events)} events from {domain}")
+                    return events
+            except Exception as e:
+                logger.warning(f"Failed to fetch from {domain}: {e}")
+                continue
+        
+        logger.error("All DaddyLive domains failed")
+        return []
     
-    async def _fetch_schedule_page(self) -> str:
-        """Fetch the schedule page HTML (homepage is now the schedule)."""
-        url = self.base_url
+    async def _fetch_schedule_page(self, url: str) -> str:
+        """Fetch the schedule page HTML."""
         logger.info(f"Fetching schedule from: {url}")
         
         response = await self.client.get(url)
         response.raise_for_status()
         
-        # Store the resolved URL after redirect (e.g., dlhd.link -> dlstreams.top)
+        # Store the resolved URL after redirect
         self.resolved_base_url = str(response.url).rstrip('/')
-        if self.resolved_base_url != self.base_url:
+        if self.resolved_base_url != url:
             logger.info(f"Redirected to: {self.resolved_base_url}")
         
         return response.text
@@ -182,7 +191,7 @@ class DaddyLiveScraper:
                     
                     if title and watch_id:
                         # Use resolved URL for embed (the actual working domain)
-                        base = self.resolved_base_url or self.base_url
+                        base = self.resolved_base_url or self.base_url or "https://dlstreams.top"
                         events.append({
                             'id': f"dl_{watch_id}",
                             'watch_id': watch_id,

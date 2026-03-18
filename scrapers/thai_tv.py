@@ -82,7 +82,9 @@ class ThaiTVScraper:
                 'name': f"{info['name']} ({info['thai_name']})",
                 'category': f"Thai {info['category']}",
                 'source': 'adintrend',
-                'stream_url': f"{self.base_url}/hd/{channel_id}?t=live",
+                # These are embed pages that need Playwright resolution
+                'embed_url': f"{self.base_url}/hd/{channel_id}?t=live",
+                'stream_url': None,  # No direct stream URL available
                 'logo': f"{self.base_url}/images02/ch{channel_id}.png",
             })
         
