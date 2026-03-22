@@ -1,243 +1,117 @@
-# 📺 TV Sphere - Stremio Addon for Live TV
+# TV Sphere 3.0
 
-A self-hosted Stremio addon that aggregates live TV channels from multiple streaming sources and delivers them directly within Stremio.
+A web-based Streamlink GUI for extracting and managing IPTV streams. Perfect for deployment on home servers like Unraid.
 
-## ✨ Features
+## Features
 
-| Feature | Description |
-|---------|-------------|
-| 📡 **Multi-Source Aggregation** | Collects channels from DaddyLive, Streamed, and more |
-| 🎬 **Auto-Categorization** | Channels automatically sorted into News, Sports, Movies, Kids, etc. |
-| 🚀 **Smart Caching** | 5-minute catalog cache, 30-minute stream cache |
-| 🔧 **Built-in Proxy** | Bypasses CORS and referrer restrictions |
-| 🔐 **HMAC URL Signing** | Protects your proxy from unauthorized use |
-| 🐳 **Docker Ready** | One-command deployment |
+- **Stream Extraction**: Enter any URL and automatically detect the appropriate Streamlink plugin
+- **Plugin Browser**: Browse all 300+ supported streaming plugins
+- **Credential Management**: Store login credentials for authenticated services (10play, etc.)
+- **Playlist Management**: Create and manage IPTV playlists
+- **M3U Export**: Export playlists as M3U files for any IPTV player
+- **Dark Mode UI**: Modern, responsive interface
 
-## 🏗️ Architecture
+## Supported Sites
 
-```
-┌─────────────┐       ┌─────────────────────────┐       ┌────────────────┐
-│   Stremio    │◄─────►│    TV Sphere Server      │◄─────►│  DaddyLive     │
-│   Client     │       │   (Quart + Playwright)   │       │  Streamed.pk   │
-└─────────────┘       └───────────┬───────────────┘       │  More...       │
-                                  │                       └────────────────┘
-                          ┌───────▼───────┐
-                          │  Proxy Engine │
-                          │  (curl-cffi)  │
-                          └───────────────┘
-```
+Streamlink supports 300+ streaming sites including:
+- Twitch
+- YouTube
+- Vimeo
+- Dailymotion
+- Facebook
+- 10Play Australia (with credentials)
+- BBC iPlayer
+- And many more...
 
-## 📋 Prerequisites
+## Quick Start
 
-### For Docker Setup
-- [Docker](https://docs.docker.com/get-docker/) installed
-- [Docker Compose](https://docs.docker.com/compose/install/)
-
-### For Python Setup
-- Python 3.10+
-- pip
-- Git
-
-## 🚀 Quick Start
-
-### Option 1: Docker (Recommended)
+### Docker (Recommended)
 
 ```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/tv-sphere.git
-cd tv-sphere
-
-# Create environment file
-cp .env.example .env
-# Edit .env and set your PROXY_SECRET_KEY
-
-# Build and run
-docker-compose up -d --build
-
-# Verify it's running
-curl http://localhost:8000/manifest.json
+docker run -d \
+  --name tv-sphere \
+  -p 7401:3000 \
+  -v tvsphere_data:/app/db \
+  adam28693/tv-sphere:latest
 ```
 
-### Option 2: Python Direct
+### Docker Compose
+
+```yaml
+version: "3.8"
+services:
+  tv-sphere:
+    image: adam28693/tv-sphere:latest
+    ports:
+      - "7401:3000"
+    volumes:
+      - tvsphere_data:/app/db
+```
+
+### Unraid
+
+1. Go to Apps tab in Unraid
+2. Search for "tv-sphere" or add custom repository
+3. Configure port (default: 7401) and paths
+4. Start container
+
+## Usage
+
+1. **Extract Stream**:
+   - Enter a streaming URL
+   - Click "Detect" to identify the plugin
+   - If auth is required, enter credentials
+   - Click "Resolve Stream" to get stream URLs
+   - Copy or open stream URL in your player
+
+2. **Manage Credentials**:
+   - Store login info for services that require authentication
+   - Credentials are encrypted in the database
+
+3. **Create Playlists**:
+   - Add channels to playlists
+   - Export as M3U for use in VLC, TiviMate, etc.
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | SQLite database path | `file:/app/db/tvsphere.db` |
+| `STREAMLINK_PATH` | Path to streamlink binary | `/usr/local/bin/streamlink` |
+
+## API Endpoints
+
+- `GET /api/plugins` - List all available plugins
+- `POST /api/detect` - Detect plugin for a URL
+- `POST /api/resolve` - Resolve stream URLs
+- `GET/POST/DELETE /api/credentials` - Manage stored credentials
+- `GET/POST/PUT/DELETE /api/playlists` - Manage playlists
+- `GET /api/m3u` - Generate M3U playlist
+
+## Development
 
 ```bash
-# Clone and setup
-git clone https://github.com/YOUR_USERNAME/tv-sphere.git
-cd tv-sphere
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# or: .\.venv\Scripts\activate  # Windows
-
 # Install dependencies
-pip install -r requirements.txt
+bun install
 
-# Install Playwright browsers
-playwright install chromium
+# Run development server
+bun dev
 
-# Set environment
-export PROXY_SECRET_KEY="your-secret-key-here"
-
-# Run
-python main.py
+# Build for production
+bun build
 ```
 
-## ⚙️ Configuration
+## Tech Stack
 
-### Environment Variables
+- **Frontend**: Next.js 16, React 19, Tailwind CSS, shadcn/ui
+- **Backend**: Next.js API Routes, Prisma ORM
+- **Stream Extraction**: Streamlink (Python)
+- **Database**: SQLite
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PROXY_SECRET_KEY` | *required* | HMAC signing key for proxy URLs |
-| `PORT` | 8000 | Server port |
-| `CACHE_TIMEOUT` | 300 | Channel list cache duration (seconds) |
-| `STREAM_CACHE_DURATION` | 1800 | Resolved stream cache duration |
-| `MAX_CONCURRENT_RESOLVERS` | 2 | Max parallel stream resolutions |
+## License
 
-### Adding New Sources
+MIT License - For educational purposes only.
 
-Edit `TV_SOURCES` in `main.py`:
+## Disclaimer
 
-```python
-TV_SOURCES = {
-    "daddylive": {
-        "name": "DaddyLive",
-        "base_url": "https://daddylive.mp",
-        "channels_path": "/24-7-channels.php",
-        "enabled": True,
-    },
-    "your_source": {
-        "name": "Your Source",
-        "base_url": "https://example.com",
-        "channels_path": "/channels",
-        "enabled": True,
-    },
-}
-```
-
-Then implement a scraper function:
-
-```python
-async def scrape_your_source_channels() -> List[Dict]:
-    """Scrape channels from your source."""
-    channels = []
-    # Your scraping logic here
-    return channels
-```
-
-Add it to `get_all_channels()`:
-
-```python
-tasks = [
-    scrape_daddylive_channels(),
-    scrape_streamed_channels(),
-    scrape_your_source_channels(),  # Add here
-]
-```
-
-## 📺 Installing in Stremio
-
-1. Start your TV Sphere server
-2. Open Stremio
-3. Go to **Settings → Addons**
-4. Paste your manifest URL: `http://YOUR_IP:8000/manifest.json`
-5. Click **Install**
-6. Browse channels in the "Live TV" catalog
-
-### For Remote Access
-
-Use a reverse proxy with HTTPS:
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name tv-sphere.yourdomain.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://localhost:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-## 🔧 API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Landing page |
-| `GET /manifest.json` | Stremio addon manifest |
-| `GET /catalog/tv/tv_channels.json` | Channel list |
-| `GET /stream/tv/{channel_id}.json` | Stream URLs |
-| `GET /proxy` | Stream proxy |
-| `GET /api/channels` | Debug: All channels |
-| `GET /health` | Health check |
-
-## 🛠️ Troubleshooting
-
-### No streams appearing
-- Check logs: `docker logs -f tv-sphere`
-- Source might have changed - update scraper selectors
-- Try increasing `PER_EMBED_TIMEOUT`
-
-### Playwright errors
-```bash
-# Reinstall browsers
-playwright install chromium
-playwright install-deps chromium
-```
-
-### High memory usage
-- Reduce `MAX_CONCURRENT_RESOLVERS`
-- Playwright uses ~500MB per browser instance
-- Minimum recommended RAM: 2GB
-
-### 403 Forbidden on streams
-- Verify `PROXY_SECRET_KEY` is set consistently
-- Clear caches by restarting the server
-
-## 📁 Project Structure
-
-```
-tv-sphere/
-├── main.py              # Main application
-├── requirements.txt     # Python dependencies
-├── Dockerfile           # Docker image definition
-├── docker-compose.yml   # Docker Compose config
-├── .env.example         # Environment template
-├── templates/
-│   └── home.html        # Landing page template
-├── cache/               # Cache directory (created at runtime)
-└── README.md            # This file
-```
-
-## ⚠️ Legal Disclaimer
-
-This addon is for **personal, educational use only**. The developers:
-- Do NOT host, store, or distribute any media content
-- Are NOT responsible for how this software is used
-- Make NO guarantees about stream availability or quality
-
-All streams are sourced from publicly available third-party websites. Users are responsible for complying with their local laws and the terms of service of streaming websites.
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit changes: `git commit -am 'Add new feature'`
-4. Push to branch: `git push origin feature/my-feature`
-5. Open a Pull Request
-
-## 📝 License
-
-Provided as-is for personal and educational use. No warranty provided.
-
----
-
-<p align="center">
-  Made with ❤️ for the Stremio community
-</p>
+This tool is for educational purposes. Users are responsible for complying with the terms of service of streaming platforms. The authors are not responsible for any misuse of this software.

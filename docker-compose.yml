@@ -1,24 +1,26 @@
-version: '3.8'
+version: "3.8"
 
 services:
   tv-sphere:
-    build: .
+    image: adam28693/tv-sphere:latest
     container_name: tv-sphere
     restart: unless-stopped
     ports:
-      - "8000:8000"
-    environment:
-      - PORT=8000
-      - PROXY_SECRET_KEY=${PROXY_SECRET_KEY:-change-me-to-a-real-secret}
-      - CACHE_TIMEOUT=300
-      - STREAM_CACHE_DURATION=1800
-      - MAX_CONCURRENT_RESOLVERS=2
-      - MAX_GLOBAL_CONCURRENT_RESOLVERS=2
+      - "7401:3000"
     volumes:
-      - ./cache:/app/cache
+      - tvsphere_data:/app/db
+    environment:
+      - DATABASE_URL=file:/app/db/tvsphere.db
+      - STREAMLINK_PATH=/usr/local/bin/streamlink
+      # Uncomment below for specific timezone
+      # - TZ=Australia/Sydney
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 10s
+
+volumes:
+  tvsphere_data:
+    driver: local

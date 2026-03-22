@@ -1,0 +1,59 @@
+// TV Sphere 3.0 Database Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Stored credentials for streaming services
+model Credential {
+  id        String   @id @default(cuid())
+  plugin    String   @unique  // e.g., "10play", "twitch"
+  name      String            // Display name
+  email     String?
+  password  String?
+  token     String?           // For OAuth tokens
+  other     String?           // JSON for other fields
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Saved playlists
+model Playlist {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  channels    Channel[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Saved channels/streams
+model Channel {
+  id          String    @id @default(cuid())
+  name        String
+  url         String
+  logo        String?
+  category    String?
+  playlistId  String?
+  playlist    Playlist? @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// Stream history
+model StreamHistory {
+  id        String   @id @default(cuid())
+  url       String
+  title     String?
+  plugin    String?
+  quality   String?
+  streamUrl String?
+  success   Boolean
+  error     String?
+  createdAt DateTime @default(now())
+}
