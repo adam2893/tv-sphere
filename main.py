@@ -1,12 +1,6 @@
 """
 TV Sphere - Stremio Addon for Live TV Channels
-A multi-source live TV streaming aggregator for Stremio
-
-Sources:
-- DaddyLive (sports events schedule)
-- Streamed.pk (sports streams)
-- Thai TV (Channel 3, 5, 7, etc.)
-- Australian TV (ABC, SBS, Nine, Seven, Ten)
+Using Streamlink for stream extraction - simple and reliable
 """
 import asyncio
 import logging
@@ -18,7 +12,7 @@ import hashlib
 import os
 import re
 from typing import Dict, List, Optional
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, urljoin
 from datetime import datetime
 
 import httpx
@@ -32,13 +26,11 @@ from quart import (
     render_template,
 )
 from quart_cors import cors
-from playwright.async_api import async_playwright, Route, Request, Response as PlaywrightResponse
-from bs4 import BeautifulSoup
-from curl_cffi import requests as cffi_requests
+import streamlink
 
 # Import scrapers
 from scrapers.daddylive import DaddyLiveScraper
-from scrapers.thai_tv import ThaiTVScraper, scrape_thai_channels
+from scrapers.thai_tv import scrape_thai_channels
 from scrapers.australian_tv import scrape_australian_channels
 
 # --- Configuration ---
@@ -51,7 +43,6 @@ app = cors(app, allow_origin="*")
 
 # --- Environment Variables ---
 CACHE_TIMEOUT = int(os.environ.get("CACHE_TIMEOUT", "300"))
-STREAM_CACHE_DURATION = int(os.environ.get("STREAM_CACHE_DURATION", "1800"))
 SECRET_KEY = os.environ.get("PROXY_SECRET_KEY", "change-me-to-a-real-secret")
 
 # --- External API ---
@@ -63,7 +54,6 @@ catalog_cache_lock = asyncio.Lock()
 
 # --- Categories ---
 CATEGORIES = {
-    # Sports
     "PPV": {"name": "PPV Events", "icon": "🎟️"},
     "Soccer": {"name": "Soccer", "icon": "⚽"},
     "Football": {"name": "Football", "icon": "🏈"},
@@ -82,15 +72,9 @@ CATEGORIES = {
     "Snooker": {"name": "Snooker", "icon": "🎱"},
     "Cycling": {"name": "Cycling", "icon": "🚴"},
     "Horse Racing": {"name": "Horse Racing", "icon": "🐴"},
-    
-    # TV Shows
     "TV Shows": {"name": "TV Shows", "icon": "📺"},
-    
-    # Thai Categories
     "Thai Entertainment": {"name": "Thai Entertainment", "icon": "🇹🇭"},
     "Thai News": {"name": "Thai News", "icon": "📰"},
-    
-    # Australian Categories
     "Australian General": {"name": "Australian General", "icon": "🇦🇺"},
     "Australian News": {"name": "Australian News", "icon": "📰"},
     "Australian Entertainment": {"name": "Australian Entertainment", "icon": "🇦🇺"},
@@ -99,7 +83,6 @@ CATEGORIES = {
     "Australian Kids": {"name": "Australian Kids", "icon": "👶"},
     "Australian Lifestyle": {"name": "Australian Lifestyle", "icon": "🏠"},
     "Australian Indigenous": {"name": "Australian Indigenous", "icon": "🇦🇺"},
-    
     "Other": {"name": "Other", "icon": "📺"},
 }
 
@@ -178,8 +161,6 @@ async def fetch_daddylive_events() -> List[Dict]:
         return channels
     except Exception as e:
         logging.error(f"Error fetching DaddyLive: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
         return []
 
 
@@ -240,7 +221,50 @@ async def get_all_channels() -> List[Dict]:
         return all_channels
 
 
-# --- Stream Resolution ---
+# --- Stream Resolution using Streamlink ---
+
+def resolve_stream_streamlink(url: str) -> Optional[str]:
+    """
+    Use Streamlink to extract the stream URL.
+    Much simpler and more reliable than Playwright.
+    """
+    try:
+        logging.info(f"Streamlink resolving: {url}")
+        
+        # Create streamlink session
+        session = streamlink.Streamlink()
+        
+        # Set options for better compatibility
+        session.set_option("http-headers", {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Referer": url,
+        })
+        
+        # Get available streams
+        streams = session.streams(url)
+        
+        if not streams:
+            logging.warning(f"No streams found for {url}")
+            return None
+        
+        # Get best quality stream
+        if "best" in streams:
+            stream_url = streams["best"].url
+        elif "720p" in streams:
+            stream_url = streams["720p"].url
+        elif "480p" in streams:
+            stream_url = streams["480p"].url
+        else:
+            # Get first available
+            stream_url = list(streams.values())[0].url
+        
+        logging.info(f"Streamlink found: {stream_url[:80]}...")
+        return stream_url
+        
+    except Exception as e:
+        logging.error(f"Streamlink error: {e}")
+        return None
+
 
 async def get_stream_embeds(event_id: str) -> List[Dict]:
     """Get embed URLs for a Streamed event."""
@@ -266,7 +290,6 @@ async def get_stream_embeds(event_id: str) -> List[Dict]:
                                 'embed_url': stream['embedUrl'],
                                 'source': src['source'],
                                 'quality': "HD" if stream.get('hd') else "SD",
-                                'stream_no': stream.get('streamNo', 1),
                             })
             except:
                 continue
@@ -275,117 +298,6 @@ async def get_stream_embeds(event_id: str) -> List[Dict]:
     except Exception as e:
         logging.error(f"Error getting embeds: {e}")
         return []
-
-
-async def resolve_stream(embed_url: str) -> tuple:
-    """
-    Resolve embed to get M3U8 content directly.
-    Captures the M3U8 response body from browser - the ONLY way to get valid content.
-    Returns (m3u8_content, headers, m3u8_url) or (None, None, None) on failure.
-    """
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    
-    # Store captured data
-    captured = {
-        'm3u8_url': None,
-        'm3u8_content': None,
-        'headers': {
-            "User-Agent": user_agent,
-            "Referer": embed_url,
-        }
-    }
-    
-    logging.info(f"Playwright resolving: {embed_url}")
-    
-    async def handle_response(response: PlaywrightResponse):
-        """Capture M3U8 response body directly from browser."""
-        url = response.url
-        status = response.status
-        
-        # Check for M3U8 responses
-        if (".m3u8" in url or ".m3u" in url or "playlist" in url.lower()) and status == 200:
-            try:
-                content_type = response.headers.get("content-type", "")
-                logging.info(f"Found M3U8 response: {url[:80]}... status={status}")
-                
-                # Get the response body - this is the actual M3U8 content!
-                body = await response.text()
-                
-                # Verify it's M3U8
-                if body.strip().startswith("#EXT"):
-                    captured['m3u8_url'] = url
-                    captured['m3u8_content'] = body
-                    logging.info(f"CAPTURED M3U8 content: {len(body)} bytes from browser response!")
-                else:
-                    logging.warning(f"Response not valid M3U8: {body[:100]}")
-            except Exception as e:
-                logging.error(f"Error capturing response: {e}")
-    
-    try:
-        async with async_playwright() as p:
-            try:
-                browser = await p.chromium.launch(headless=True, channel="chrome", args=["--no-sandbox"])
-            except:
-                browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-            
-            context = await browser.new_context(user_agent=user_agent, ignore_https_errors=True)
-            page = await context.new_page()
-            
-            # Listen for responses
-            page.on("response", handle_response)
-            
-            try:
-                await page.goto(embed_url, wait_until="domcontentloaded", timeout=30000)
-                
-                # Try to click play buttons to trigger video loading
-                play_selectors = [
-                    "button.vjs-big-play-button",
-                    ".play-button", 
-                    "#player",
-                    "video",
-                    ".vjs-poster",
-                    "[onclick*='play']",
-                    ".video-container",
-                    "#videoPlayer",
-                    ".jw-media",
-                ]
-                
-                for attempt in range(15):
-                    if captured['m3u8_content']:
-                        logging.info(f"M3U8 captured on attempt {attempt+1}")
-                        break
-                    
-                    for sel in play_selectors:
-                        try:
-                            el = page.locator(sel).first
-                            if await el.is_visible(timeout=100):
-                                await el.click(timeout=500, force=True)
-                                await asyncio.sleep(0.2)
-                        except:
-                            pass
-                    
-                    await asyncio.sleep(0.5)
-                
-                # Additional wait
-                if not captured['m3u8_content']:
-                    logging.info("Waiting for player to fully load...")
-                    await asyncio.sleep(5)
-                    
-            finally:
-                await context.close()
-                await browser.close()
-                
-    except Exception as e:
-        logging.error(f"Playwright error: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-    
-    if captured['m3u8_content']:
-        logging.info(f"Returning captured M3U8: {len(captured['m3u8_content'])} bytes")
-        return captured['m3u8_content'], captured['headers'], captured['m3u8_url']
-    
-    logging.warning(f"No M3U8 captured for {embed_url}")
-    return None, None, None
 
 
 # --- Routes ---
@@ -408,7 +320,7 @@ async def manifest():
     
     return jsonify({
         "id": "org.stremio.tvsphere",
-        "version": "1.6.0",
+        "version": "2.0.0",
         "name": "TV Sphere",
         "description": "Live TV from Sports, Thai & Australian channels",
         "logo": url_for("serve_logo", _external=True),
@@ -487,12 +399,10 @@ async def meta(type: str, id: str):
 
 @app.route("/stream/<type>/<id>.json")
 async def stream(type: str, id: str):
-    """Return stream URL."""
+    """Return stream URL using Streamlink."""
     logging.info(f"Stream request for: {id}")
     
     embed_url = None
-    stream_url = None
-    channel_data = None
     
     if id.startswith("st_"):
         event_id = id[3:]
@@ -506,88 +416,106 @@ async def stream(type: str, id: str):
         channel = next((c for c in channels if c['id'] == id), None)
         if channel:
             embed_url = channel.get('embed_url')
-            channel_data = channel
             logging.info(f"Got embed URL from DaddyLive: {embed_url}")
-    
-    elif id.startswith("aus_"):
-        # Australian channels might have direct stream URLs
-        channels = await get_all_channels()
-        channel = next((c for c in channels if c['id'] == id), None)
-        if channel:
-            stream_url = channel.get('stream_url')
-            channel_data = channel
-            logging.info(f"Got stream URL for Australian channel: {stream_url}")
     
     elif id.startswith("thai_"):
         channels = await get_all_channels()
         channel = next((c for c in channels if c['id'] == id), None)
         if channel:
             embed_url = channel.get('embed_url')
-            channel_data = channel
             logging.info(f"Got embed URL for Thai channel: {embed_url}")
     
-    # Handle direct stream URLs (no Playwright needed)
-    if stream_url and stream_url.startswith("http"):
-        logging.info(f"Returning direct stream URL: {stream_url}")
-        return jsonify({"streams": [{
-            "title": "Live Stream",
-            "url": stream_url,
-        }]})
+    elif id.startswith("aus_"):
+        channels = await get_all_channels()
+        channel = next((c for c in channels if c['id'] == id), None)
+        if channel:
+            # Australian channels might have direct stream URLs
+            stream_url = channel.get('stream_url')
+            if stream_url and stream_url.startswith("http"):
+                logging.info(f"Direct stream URL for Australian channel: {stream_url}")
+                return jsonify({"streams": [{"title": "Live Stream", "url": stream_url}]})
+            embed_url = channel.get('embed_url')
     
     if not embed_url:
         logging.warning(f"No embed URL for {id}")
         return jsonify({"streams": []})
     
-    # Resolve the stream - returns content, headers, url
-    m3u8_content, headers, m3u8_url = await resolve_stream(embed_url)
+    # Use Streamlink to resolve (run in thread pool since it's sync)
+    loop = asyncio.get_event_loop()
+    stream_url = await loop.run_in_executor(None, resolve_stream_streamlink, embed_url)
     
-    if not m3u8_content:
+    if not stream_url:
         logging.warning(f"Could not resolve stream for {id}")
         return jsonify({"streams": []})
     
-    # We have the M3U8 content! Rewrite it and return as data URL
-    headers_b64 = base64.b64encode(json.dumps(headers).encode()).decode()
+    logging.info(f"Returning stream for {id}: {stream_url[:80]}...")
     
-    # Rewrite segment URLs through proxy
-    new_lines = []
-    for line in m3u8_content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("#"):
-            # Rewrite URI in EXT-X-KEY
-            if "URI=" in line:
-                line = re.sub(
-                    r'URI="([^"]+)"',
-                    lambda m: f'URI="{url_for("proxy_segment", _external=True)}?url={quote(urljoin(m3u8_url, m.group(1)))}&headers={headers_b64}&sig={sign_url(urljoin(m3u8_url, m.group(1)))}"',
-                    line
-                )
-            new_lines.append(line)
-        else:
-            # Rewrite segment URL
-            abs_url = urljoin(m3u8_url, line)
-            proxy_seg_url = f"{url_for('proxy_segment', _external=True)}?url={quote(abs_url)}&headers={headers_b64}&sig={sign_url(abs_url)}"
-            new_lines.append(proxy_seg_url)
+    # Check if it's an M3U8 that needs proxying
+    if ".m3u8" in stream_url or "m3u8" in stream_url.lower():
+        # Return via proxy to handle CORS and segments
+        proxy_url = f"{url_for('proxy_m3u8', _external=True)}?url={quote(stream_url)}&sig={sign_url(stream_url)}"
+        return jsonify({"streams": [{"title": "Live Stream", "url": proxy_url}]})
     
-    # Return as data URL
-    rewritten_m3u8 = "\n".join(new_lines)
-    data_url = f"data:application/vnd.apple.mpegurl;base64,{base64.b64encode(rewritten_m3u8.encode()).decode()}"
+    return jsonify({"streams": [{"title": "Live Stream", "url": stream_url}]})
+
+
+@app.route("/proxy_m3u8")
+async def proxy_m3u8():
+    """Proxy M3U8 playlists and rewrite segment URLs."""
+    target_url = request.args.get("url")
+    sig = request.args.get("sig")
     
-    logging.info(f"Returning stream for {id} with {len(new_lines)} M3U8 lines")
+    if not target_url or not sig:
+        return "Missing parameters", 400
     
-    streams = [{
-        "title": "Live Stream",
-        "url": data_url,
-    }]
+    if not hmac.compare_digest(sig, sign_url(target_url)):
+        return "Forbidden", 403
     
-    return jsonify({"streams": streams})
+    logging.info(f"Proxying M3U8: {target_url[:80]}...")
+    
+    try:
+        client = await get_client()
+        resp = await client.get(target_url)
+        
+        if resp.status_code != 200:
+            logging.error(f"M3U8 fetch failed: {resp.status_code}")
+            return f"Upstream error: {resp.status_code}", 502
+        
+        content = resp.text
+        
+        # Rewrite segment URLs through proxy
+        new_lines = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                # Rewrite URI in EXT-X-KEY
+                if "URI=" in line:
+                    line = re.sub(
+                        r'URI="([^"]+)"',
+                        lambda m: f'URI="{url_for("proxy_segment", _external=True)}?url={quote(urljoin(target_url, m.group(1)))}&sig={sign_url(urljoin(target_url, m.group(1)))}"',
+                        line
+                    )
+                new_lines.append(line)
+            else:
+                # Rewrite segment URL
+                abs_url = urljoin(target_url, line)
+                proxy_seg_url = f"{url_for('proxy_segment', _external=True)}?url={quote(abs_url)}&sig={sign_url(abs_url)}"
+                new_lines.append(proxy_seg_url)
+        
+        logging.info(f"Returning rewritten M3U8 with {len(new_lines)} lines")
+        return Response("\n".join(new_lines), mimetype="application/vnd.apple.mpegurl")
+        
+    except Exception as e:
+        logging.error(f"Proxy error: {e}")
+        return str(e), 500
 
 
 @app.route("/proxy_segment")
 async def proxy_segment():
     """Proxy individual segments."""
     target_url = request.args.get("url")
-    headers_b64 = request.args.get("headers")
     sig = request.args.get("sig")
     
     if not target_url or not sig:
@@ -597,16 +525,11 @@ async def proxy_segment():
         return "Forbidden", 403
     
     try:
-        headers = json.loads(base64.b64decode(headers_b64).decode()) if headers_b64 else {}
-    except:
-        headers = {}
-    
-    async with cffi_requests.AsyncSession(impersonate="chrome120") as session:
-        try:
-            resp = await session.get(target_url, headers=headers)
-            return Response(resp.content, status=resp.status_code, mimetype=resp.headers.get("Content-Type", "video/MP2T"))
-        except Exception as e:
-            return str(e), 500
+        client = await get_client()
+        resp = await client.get(target_url)
+        return Response(resp.content, status=resp.status_code, mimetype=resp.headers.get("Content-Type", "video/MP2T"))
+    except Exception as e:
+        return str(e), 500
 
 
 # --- Debug API ---
