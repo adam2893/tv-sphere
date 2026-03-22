@@ -285,10 +285,6 @@ const AUTH_PLUGINS: Record<string, { requiresAuth: boolean; authFields: Array<{ 
       { name: 'password', type: 'password', label: 'Password' }
     ]
   },
-  'youtube': { 
-    requiresAuth: false, 
-    authFields: [] 
-  },
   'zattoo': { 
     requiresAuth: true, 
     authFields: [
