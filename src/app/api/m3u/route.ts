@@ -54,3 +54,49 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to generate M3U' }, { status: 500 });
   }
 }
+
+// POST - Add channel to playlist
+export async function POST(request: NextRequest) {
+  try {
+    const { playlistId, name, url, logo, category } = await request.json();
+    
+    if (!playlistId || !name || !url) {
+      return NextResponse.json({ error: 'Playlist ID, name, and URL are required' }, { status: 400 });
+    }
+    
+    const channel = await db.channel.create({
+      data: {
+        name,
+        url,
+        logo,
+        category,
+        playlistId,
+      },
+    });
+    
+    return NextResponse.json({ channel });
+  } catch (error) {
+    console.error('Error adding channel:', error);
+    return NextResponse.json({ error: 'Failed to add channel' }, { status: 500 });
+  }
+}
+
+// DELETE - Remove channel
+export async function DELETE(request: NextRequest) {
+  try {
+    const { channelId } = await request.json();
+    
+    if (!channelId) {
+      return NextResponse.json({ error: 'Channel ID is required' }, { status: 400 });
+    }
+    
+    await db.channel.delete({
+      where: { id: channelId },
+    });
+    
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting channel:', error);
+    return NextResponse.json({ error: 'Failed to delete channel' }, { status: 500 });
+  }
+}

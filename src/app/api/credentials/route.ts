@@ -8,16 +8,15 @@ export async function GET() {
       orderBy: { plugin: 'asc' },
     });
     
-    // Don't return actual passwords in list
+    // Don't return actual passwords
     const safeCredentials = credentials.map(c => ({
       id: c.id,
       plugin: c.plugin,
       name: c.name,
-      hasEmail: !!c.email,
+      email: c.email,
       hasPassword: !!c.password,
       hasToken: !!c.token,
       createdAt: c.createdAt,
-      updatedAt: c.updatedAt,
     }));
     
     return NextResponse.json({ credentials: safeCredentials });
@@ -30,13 +29,12 @@ export async function GET() {
 // POST - Create or update credentials
 export async function POST(request: NextRequest) {
   try {
-    const { plugin, name, email, password, token, other } = await request.json();
+    const { plugin, name, email, password, token } = await request.json();
     
     if (!plugin) {
       return NextResponse.json({ error: 'Plugin name is required' }, { status: 400 });
     }
     
-    // Upsert the credential
     const credential = await db.credential.upsert({
       where: { plugin },
       create: {
@@ -45,18 +43,21 @@ export async function POST(request: NextRequest) {
         email,
         password,
         token,
-        other,
       },
       update: {
         name: name || plugin,
         email,
         password,
         token,
-        other,
       },
     });
     
-    return NextResponse.json({ credential: { ...credential, password: '***' } });
+    return NextResponse.json({ 
+      credential: { 
+        ...credential, 
+        password: '***' 
+      } 
+    });
   } catch (error) {
     console.error('Error saving credentials:', error);
     return NextResponse.json({ error: 'Failed to save credentials' }, { status: 500 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -10,19 +10,36 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { 
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { 
   Play, 
   Search, 
   Copy, 
   ExternalLink, 
   Loader2, 
-  CheckCircle, 
-  XCircle, 
   Key, 
   List, 
   Download,
   Trash2,
   Plus,
-  Save
+  Save,
+  Video,
+  CheckCircle,
+  XCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -43,15 +60,17 @@ interface Credential {
   id: string;
   plugin: string;
   name: string;
-  hasEmail: boolean;
+  email: string | null;
   hasPassword: boolean;
   hasToken: boolean;
+  createdAt: string;
 }
 
 interface Playlist {
   id: string;
   name: string;
   description: string | null;
+  channels?: Array<{ id: string; name: string; url: string; logo?: string; category?: string }>;
   _count?: { channels: number };
 }
 
@@ -72,10 +91,26 @@ export default function TVSpherePage() {
   // Playlists tab state
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [loadingPlaylists, setLoadingPlaylists] = useState(false);
+  const [newPlaylistDialog, setNewPlaylistDialog] = useState(false);
+  const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [newPlaylistDesc, setNewPlaylistDesc] = useState('');
   
   // Credentials tab state
   const [savedCredentials, setSavedCredentials] = useState<Credential[]>([]);
   const [loadingCredentials, setLoadingCredentials] = useState(false);
+  const [newCredDialog, setNewCredDialog] = useState(false);
+  const [newCredPlugin, setNewCredPlugin] = useState('');
+  const [newCredName, setNewCredName] = useState('');
+  const [newCredEmail, setNewCredEmail] = useState('');
+  const [newCredPassword, setNewCredPassword] = useState('');
+  const [savingCred, setSavingCred] = useState(false);
+
+  // Load plugins on mount
+  useEffect(() => {
+    loadPlugins();
+    loadPlaylists();
+    loadCredentials();
+  }, []);
 
   // Detect plugin from URL
   const handleDetect = useCallback(async () => {
@@ -184,6 +219,116 @@ export default function TVSpherePage() {
     }
   }, []);
 
+  // Create playlist
+  const createPlaylist = useCallback(async () => {
+    if (!newPlaylistName.trim()) {
+      toast.error('Please enter a playlist name');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/playlists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newPlaylistName, description: newPlaylistDesc }),
+      });
+
+      if (response.ok) {
+        toast.success('Playlist created');
+        setNewPlaylistDialog(false);
+        setNewPlaylistName('');
+        setNewPlaylistDesc('');
+        loadPlaylists();
+      } else {
+        toast.error('Failed to create playlist');
+      }
+    } catch {
+      toast.error('Failed to create playlist');
+    }
+  }, [newPlaylistName, newPlaylistDesc, loadPlaylists]);
+
+  // Delete playlist
+  const deletePlaylist = useCallback(async (id: string) => {
+    if (!confirm('Delete this playlist?')) return;
+    
+    try {
+      const response = await fetch('/api/playlists', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+
+      if (response.ok) {
+        toast.success('Playlist deleted');
+        loadPlaylists();
+      } else {
+        toast.error('Failed to delete playlist');
+      }
+    } catch {
+      toast.error('Failed to delete playlist');
+    }
+  }, [loadPlaylists]);
+
+  // Save credentials
+  const saveCredentials = useCallback(async () => {
+    if (!newCredPlugin.trim()) {
+      toast.error('Please enter a plugin name');
+      return;
+    }
+
+    setSavingCred(true);
+    try {
+      const response = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plugin: newCredPlugin,
+          name: newCredName || newCredPlugin,
+          email: newCredEmail,
+          password: newCredPassword,
+        }),
+      });
+
+      if (response.ok) {
+        toast.success('Credentials saved');
+        setNewCredDialog(false);
+        setNewCredPlugin('');
+        setNewCredName('');
+        setNewCredEmail('');
+        setNewCredPassword('');
+        loadCredentials();
+      } else {
+        toast.error('Failed to save credentials');
+      }
+    } catch {
+      toast.error('Failed to save credentials');
+    } finally {
+      setSavingCred(false);
+    }
+  }, [newCredPlugin, newCredName, newCredEmail, newCredPassword, loadCredentials]);
+
+  // Delete credentials
+  const deleteCredentials = useCallback(async (id: string) => {
+    if (!confirm('Delete these credentials?')) return;
+    
+    try {
+      const response = await fetch('/api/credentials', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+
+      if (response.ok) {
+        toast.success('Credentials deleted');
+        loadCredentials();
+      } else {
+        toast.error('Failed to delete credentials');
+      }
+    } catch {
+      toast.error('Failed to delete credentials');
+    }
+  }, [loadCredentials]);
+
   // Copy to clipboard
   const copyToClipboard = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
@@ -197,11 +342,29 @@ export default function TVSpherePage() {
 
   // Download M3U
   const downloadM3U = useCallback(async (playlistId?: string) => {
-    const url = playlistId 
+    const downloadUrl = playlistId 
       ? `/api/m3u?playlistId=${playlistId}&download=true`
       : '/api/m3u?download=true';
-    window.open(url, '_blank');
+    window.open(downloadUrl, '_blank');
   }, []);
+
+  // Use plugin (fill URL)
+  const usePlugin = useCallback((pluginName: string) => {
+    const placeholders: Record<string, string> = {
+      twitch: 'https://www.twitch.tv/username',
+      youtube: 'https://www.youtube.com/watch?v=VIDEO_ID',
+      vimeo: 'https://vimeo.com/VIDEO_ID',
+      dailymotion: 'https://www.dailymotion.com/video/VIDEO_ID',
+      facebook: 'https://www.facebook.com/watch/live/?v=VIDEO_ID',
+    };
+    setUrl(placeholders[pluginName] || `https://example.com/${pluginName}`);
+    toast.info(`Enter a ${pluginName} URL`);
+  }, []);
+
+  // Filter plugins by search
+  const filteredPlugins = plugins.filter(p => 
+    p.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
@@ -220,15 +383,15 @@ export default function TVSpherePage() {
               <Play className="w-4 h-4 mr-2" />
               Stream
             </TabsTrigger>
-            <TabsTrigger value="plugins" className="data-[state=active]:bg-blue-600" onClick={loadPlugins}>
+            <TabsTrigger value="plugins" className="data-[state=active]:bg-blue-600">
               <Search className="w-4 h-4 mr-2" />
-              Plugins
+              Plugins ({plugins.length})
             </TabsTrigger>
-            <TabsTrigger value="playlists" className="data-[state=active]:bg-blue-600" onClick={loadPlaylists}>
+            <TabsTrigger value="playlists" className="data-[state=active]:bg-blue-600">
               <List className="w-4 h-4 mr-2" />
               Playlists
             </TabsTrigger>
-            <TabsTrigger value="credentials" className="data-[state=active]:bg-blue-600" onClick={loadCredentials}>
+            <TabsTrigger value="credentials" className="data-[state=active]:bg-blue-600">
               <Key className="w-4 h-4 mr-2" />
               Credentials
             </TabsTrigger>
@@ -331,6 +494,7 @@ export default function TVSpherePage() {
                                 size="sm"
                                 variant="ghost"
                                 onClick={() => copyToClipboard(stream.url)}
+                                title="Copy URL"
                               >
                                 <Copy className="w-4 h-4" />
                               </Button>
@@ -338,6 +502,7 @@ export default function TVSpherePage() {
                                 size="sm"
                                 variant="ghost"
                                 onClick={() => openInPlayer(stream.url)}
+                                title="Open in player"
                               >
                                 <ExternalLink className="w-4 h-4" />
                               </Button>
@@ -358,7 +523,7 @@ export default function TVSpherePage() {
               </CardHeader>
               <CardContent>
                 <ul className="text-sm text-gray-400 space-y-1">
-                  <li>• Supported: Twitch, YouTube, Vimeo, Dailymotion, and 300+ other sites</li>
+                  <li>• Supported: Twitch, YouTube, Vimeo, Dailymotion, and {plugins.length}+ other sites</li>
                   <li>• Some sites require login credentials (10play, Facebook, etc.)</li>
                   <li>• Geo-blocked streams may need a VPN</li>
                   <li>• Click the stream URL to open in your default player</li>
@@ -371,10 +536,18 @@ export default function TVSpherePage() {
           <TabsContent value="plugins" className="space-y-4">
             <Card className="bg-gray-800/50 border-gray-700">
               <CardHeader>
-                <CardTitle className="text-white">Available Plugins</CardTitle>
-                <CardDescription className="text-gray-400">
-                  Browse all Streamlink plugins and their authentication requirements
-                </CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-white">Available Plugins</CardTitle>
+                    <CardDescription className="text-gray-400">
+                      Click a plugin to use it, or search for specific sites
+                    </CardDescription>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={loadPlugins} disabled={loadingPlugins}>
+                    <RefreshCw className={`w-4 h-4 mr-2 ${loadingPlugins ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="mb-4">
@@ -392,30 +565,30 @@ export default function TVSpherePage() {
                   </div>
                 ) : (
                   <ScrollArea className="h-96">
-                    <div className="grid gap-2">
-                      {plugins
-                        .filter((p) => p.name.toLowerCase().includes(searchTerm.toLowerCase()))
-                        .map((plugin) => (
-                          <div
-                            key={plugin.name}
-                            className="bg-gray-700/50 rounded-lg p-3 flex items-center justify-between"
-                          >
-                            <div className="flex items-center gap-3">
-                              <span className="font-medium text-white">{plugin.name}</span>
-                              {plugin.requiresAuth && (
-                                <Badge variant="outline" className="border-yellow-500 text-yellow-400">
-                                  <Key className="w-3 h-3 mr-1" />
-                                  Auth
-                                </Badge>
-                              )}
-                            </div>
-                            {plugin.domains.length > 0 && (
-                              <span className="text-xs text-gray-500">
-                                {plugin.domains[0]}
-                              </span>
+                    <div className="grid gap-2 pr-4">
+                      {filteredPlugins.map((plugin) => (
+                        <button
+                          key={plugin.name}
+                          onClick={() => usePlugin(plugin.name)}
+                          className="bg-gray-700/50 hover:bg-gray-600/50 rounded-lg p-3 flex items-center justify-between text-left w-full transition-colors"
+                        >
+                          <div className="flex items-center gap-3">
+                            <Video className="w-4 h-4 text-blue-400" />
+                            <span className="font-medium text-white">{plugin.name}</span>
+                            {plugin.requiresAuth && (
+                              <Badge variant="outline" className="border-yellow-500 text-yellow-400 text-xs">
+                                <Key className="w-3 h-3 mr-1" />
+                                Auth
+                              </Badge>
                             )}
                           </div>
-                        ))}
+                          {plugin.domains.length > 0 && (
+                            <span className="text-xs text-gray-500">
+                              {plugin.domains[0]}
+                            </span>
+                          )}
+                        </button>
+                      ))}
                     </div>
                   </ScrollArea>
                 )}
@@ -434,7 +607,10 @@ export default function TVSpherePage() {
                       Manage your IPTV playlists and export as M3U
                     </CardDescription>
                   </div>
-                  <Button className="bg-blue-600 hover:bg-blue-700">
+                  <Button 
+                    className="bg-blue-600 hover:bg-blue-700"
+                    onClick={() => setNewPlaylistDialog(true)}
+                  >
                     <Plus className="w-4 h-4 mr-2" />
                     New Playlist
                   </Button>
@@ -450,6 +626,14 @@ export default function TVSpherePage() {
                     <List className="w-12 h-12 mx-auto mb-2 opacity-50" />
                     <p>No playlists yet</p>
                     <p className="text-sm">Create a playlist to organize your streams</p>
+                    <Button 
+                      variant="outline" 
+                      className="mt-4"
+                      onClick={() => setNewPlaylistDialog(true)}
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      Create Playlist
+                    </Button>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -469,10 +653,17 @@ export default function TVSpherePage() {
                             size="sm"
                             variant="ghost"
                             onClick={() => downloadM3U(playlist.id)}
+                            title="Download M3U"
                           >
                             <Download className="w-4 h-4" />
                           </Button>
-                          <Button size="sm" variant="ghost" className="text-red-400">
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            className="text-red-400"
+                            onClick={() => deletePlaylist(playlist.id)}
+                            title="Delete"
+                          >
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
@@ -506,7 +697,10 @@ export default function TVSpherePage() {
                       Manage login credentials for authenticated streaming services
                     </CardDescription>
                   </div>
-                  <Button className="bg-blue-600 hover:bg-blue-700">
+                  <Button 
+                    className="bg-blue-600 hover:bg-blue-700"
+                    onClick={() => setNewCredDialog(true)}
+                  >
                     <Plus className="w-4 h-4 mr-2" />
                     Add Credentials
                   </Button>
@@ -522,6 +716,14 @@ export default function TVSpherePage() {
                     <Key className="w-12 h-12 mx-auto mb-2 opacity-50" />
                     <p>No saved credentials</p>
                     <p className="text-sm">Add credentials for services that require login</p>
+                    <Button 
+                      variant="outline" 
+                      className="mt-4"
+                      onClick={() => setNewCredDialog(true)}
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Credentials
+                    </Button>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -535,10 +737,24 @@ export default function TVSpherePage() {
                           <p className="text-sm text-gray-400">{cred.plugin}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          {cred.hasEmail && <Badge variant="outline" className="border-green-500 text-green-400"><CheckCircle className="w-3 h-3 mr-1" />Email</Badge>}
-                          {cred.hasPassword && <Badge variant="outline" className="border-green-500 text-green-400"><CheckCircle className="w-3 h-3 mr-1" />Password</Badge>}
-                          {cred.hasToken && <Badge variant="outline" className="border-green-500 text-green-400"><CheckCircle className="w-3 h-3 mr-1" />Token</Badge>}
-                          <Button size="sm" variant="ghost" className="text-red-400">
+                          {cred.email && (
+                            <Badge variant="outline" className="border-green-500 text-green-400">
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              Email
+                            </Badge>
+                          )}
+                          {cred.hasPassword && (
+                            <Badge variant="outline" className="border-green-500 text-green-400">
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              Password
+                            </Badge>
+                          )}
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            className="text-red-400"
+                            onClick={() => deleteCredentials(cred.id)}
+                          >
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
@@ -548,41 +764,140 @@ export default function TVSpherePage() {
                 )}
               </CardContent>
             </Card>
-
-            {/* Add Credential Form */}
-            <Card className="bg-gray-800/50 border-gray-700">
-              <CardHeader>
-                <CardTitle className="text-white text-sm">Add New Credentials</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-gray-300">Plugin</Label>
-                    <Input placeholder="10play" className="bg-gray-700 border-gray-600 text-white" />
-                  </div>
-                  <div>
-                    <Label className="text-gray-300">Display Name</Label>
-                    <Input placeholder="10Play Australia" className="bg-gray-700 border-gray-600 text-white" />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-gray-300">Email</Label>
-                    <Input type="email" placeholder="your@email.com" className="bg-gray-700 border-gray-600 text-white" />
-                  </div>
-                  <div>
-                    <Label className="text-gray-300">Password</Label>
-                    <Input type="password" placeholder="••••••••" className="bg-gray-700 border-gray-600 text-white" />
-                  </div>
-                </div>
-                <Button className="w-full bg-green-600 hover:bg-green-700">
-                  <Save className="w-4 h-4 mr-2" />
-                  Save Credentials
-                </Button>
-              </CardContent>
-            </Card>
           </TabsContent>
         </Tabs>
+
+        {/* New Playlist Dialog */}
+        <Dialog open={newPlaylistDialog} onOpenChange={setNewPlaylistDialog}>
+          <DialogContent className="bg-gray-800 border-gray-700">
+            <DialogHeader>
+              <DialogTitle className="text-white">Create New Playlist</DialogTitle>
+              <DialogDescription className="text-gray-400">
+                Enter a name for your new playlist
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label className="text-gray-300">Name</Label>
+                <Input
+                  value={newPlaylistName}
+                  onChange={(e) => setNewPlaylistName(e.target.value)}
+                  placeholder="My Playlist"
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300">Description (optional)</Label>
+                <Input
+                  value={newPlaylistDesc}
+                  onChange={(e) => setNewPlaylistDesc(e.target.value)}
+                  placeholder="Description"
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setNewPlaylistDialog(false)}>
+                Cancel
+              </Button>
+              <Button className="bg-blue-600 hover:bg-blue-700" onClick={createPlaylist}>
+                Create
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* New Credentials Dialog */}
+        <Dialog open={newCredDialog} onOpenChange={setNewCredDialog}>
+          <DialogContent className="bg-gray-800 border-gray-700">
+            <DialogHeader>
+              <DialogTitle className="text-white">Add Credentials</DialogTitle>
+              <DialogDescription className="text-gray-400">
+                Enter login credentials for a streaming service
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label className="text-gray-300">Plugin / Service</Label>
+                {plugins.length > 0 ? (
+                  <Select value={newCredPlugin} onValueChange={setNewCredPlugin}>
+                    <SelectTrigger className="bg-gray-700 border-gray-600 text-white">
+                      <SelectValue placeholder="Select a plugin" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-gray-700 border-gray-600">
+                      {plugins.filter(p => p.requiresAuth).map((p) => (
+                        <SelectItem key={p.name} value={p.name} className="text-white hover:bg-gray-600">
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="other" className="text-white hover:bg-gray-600">
+                        Other (enter manually)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    value={newCredPlugin}
+                    onChange={(e) => setNewCredPlugin(e.target.value)}
+                    placeholder="e.g., 10play"
+                    className="bg-gray-700 border-gray-600 text-white"
+                  />
+                )}
+              </div>
+              <div>
+                <Label className="text-gray-300">Display Name</Label>
+                <Input
+                  value={newCredName}
+                  onChange={(e) => setNewCredName(e.target.value)}
+                  placeholder="My 10Play Account"
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300">Email / Username</Label>
+                <Input
+                  type="email"
+                  value={newCredEmail}
+                  onChange={(e) => setNewCredEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+              </div>
+              <div>
+                <Label className="text-gray-300">Password</Label>
+                <Input
+                  type="password"
+                  value={newCredPassword}
+                  onChange={(e) => setNewCredPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="bg-gray-700 border-gray-600 text-white"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setNewCredDialog(false)}>
+                Cancel
+              </Button>
+              <Button 
+                className="bg-green-600 hover:bg-green-700" 
+                onClick={saveCredentials}
+                disabled={savingCred}
+              >
+                {savingCred ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Credentials
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Footer */}
         <footer className="text-center text-gray-500 text-sm mt-8 pb-4">
